@@ -46,8 +46,12 @@ class HookChangeResult:
         }
 
 
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
 def get_project_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(sys.executable).resolve().parent if is_frozen() else Path(__file__).resolve().parent
 
 
 def get_user_settings_path(claude_dir: Path | None = None) -> Path:
@@ -92,15 +96,24 @@ def build_hook_command(
     claude_dir: Path | None = None,
 ) -> str:
     root = Path(project_dir).resolve() if project_dir else get_project_dir()
-    manager_path = root / "hook_manager.py"
-    python_path = python_executable or sys.executable
-    command = [
-        python_path,
-        str(manager_path),
-        "launch",
-        "--managed-hook-id",
-        MANAGED_HOOK_ID,
-    ]
+    if is_frozen():
+        command = [
+            str(root / Path(sys.executable).name),
+            "--hook-manager",
+            "launch",
+            "--managed-hook-id",
+            MANAGED_HOOK_ID,
+        ]
+    else:
+        manager_path = root / "hook_manager.py"
+        python_path = python_executable or sys.executable
+        command = [
+            python_path,
+            str(manager_path),
+            "launch",
+            "--managed-hook-id",
+            MANAGED_HOOK_ID,
+        ]
     if claude_dir is not None:
         command.extend(["--claude-dir", str(Path(claude_dir).expanduser())])
     return subprocess.list2cmdline(command)
@@ -223,7 +236,7 @@ def install_session_start_hook(
     python_executable: str | None = None,
 ) -> HookChangeResult:
     root = Path(project_dir).resolve() if project_dir else get_project_dir()
-    if not (root / "settings_watcher.py").exists():
+    if not is_frozen() and not (root / "settings_watcher.py").exists():
         raise HookManagerError(f"settings_watcher.py not found: {root}")
 
     settings_path = get_user_settings_path(claude_dir)
@@ -267,13 +280,18 @@ def remove_session_start_hook(
 
 
 def launch_watcher(claude_dir: Path | None = None) -> int:
-    watcher_path = get_project_dir() / "settings_watcher.py"
-    command = [sys.executable, str(watcher_path), "--quiet"]
+    if is_frozen():
+        command = [sys.executable, "--watcher", "--quiet"]
+        cwd = str(get_project_dir())
+    else:
+        watcher_path = get_project_dir() / "settings_watcher.py"
+        command = [sys.executable, str(watcher_path), "--quiet"]
+        cwd = str(get_project_dir())
     if claude_dir is not None:
         command.extend(["--claude-dir", str(Path(claude_dir).expanduser())])
 
     kwargs: dict[str, Any] = {
-        "cwd": str(get_project_dir()),
+        "cwd": cwd,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
