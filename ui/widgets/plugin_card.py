@@ -27,7 +27,8 @@ class PluginCard(CardWidget):
         self.version_value = BodyLabel(plugin.display_version, self)
         self.scope_value = BodyLabel("、".join(plugin.scopes) if plugin.scopes else "-", self)
         self.toggle_button = PushButton("禁用插件" if plugin.enabled else "启用插件", self)
-        self.uninstall_button = PushButton("删除卸载", self)
+        self.uninstall_button = PushButton("卸载插件", self)
+        self.uninstall_button.setObjectName("uninstallButton")
 
         self._build_layout()
         self._connect_signals()
@@ -89,12 +90,18 @@ class PluginCard(CardWidget):
         self._selected = selected
         self._apply_style()
 
+    def set_enabled_state(self, enabled: bool) -> None:
+        self.plugin.enabled = enabled
+        self.status_badge.setText("已启用" if enabled else "已禁用")
+        self.toggle_button.setText("禁用插件" if enabled else "启用插件")
+        self._apply_style()
+
     def _apply_style(self) -> None:
         selected_border = "#2f78d6" if self._selected else "#c8d7ea"
         selected_bg = "#e8f2ff" if self._selected else "#ffffff"
-        badge_bg = "#dff5e7" if self.plugin.enabled else "#fde5df"
-        badge_fg = "#0c6b35" if self.plugin.enabled else "#a73525"
-        meta_bg = "#f3f8ff" if self.plugin.enabled else "#fff4f1"
+        badge_bg = "#dff5e7" if self.plugin.enabled else "#eef2f7"
+        badge_fg = "#0c6b35" if self.plugin.enabled else "#596a82"
+        meta_bg = "#f3f8ff" if self.plugin.enabled else "#f6f8fb"
 
         self.setStyleSheet(
             f"""
@@ -140,6 +147,31 @@ class PluginCard(CardWidget):
             }}
             PushButton {{
                 color: #172033;
+            }}
+            PushButton:disabled {{
+                color: #8a98aa;
+                background: #eef2f7;
+                border: 1px solid #d7e2f0;
+            }}
+            PushButton#uninstallButton {{
+                color: #a73525;
+                border: 1px solid #e2b8af;
+                background: #fff7f5;
+            }}
+            PushButton#uninstallButton:hover {{
+                color: #8f2b1f;
+                border: 1px solid #cf8f83;
+                background: #fdebe7;
+            }}
+            PushButton#uninstallButton:pressed {{
+                color: #ffffff;
+                border: 1px solid #a73525;
+                background: #a73525;
+            }}
+            PushButton#uninstallButton:disabled {{
+                color: #bd8d85;
+                border: 1px solid #ead2ce;
+                background: #f8f1ef;
             }}
             """
         )

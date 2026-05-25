@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import BodyLabel, PrimaryPushButton, PushButton, SearchLineEdit, StrongBodyLabel
 
@@ -114,10 +114,20 @@ class PluginListPanel(QWidget):
             PushButton {
                 color: #172033;
             }
+            PushButton:disabled {
+                color: #8a98aa;
+                background: #eef2f7;
+                border: 1px solid #d7e2f0;
+            }
             PrimaryPushButton {
                 color: #ffffff;
                 background: #2f78d6;
                 border: 1px solid #2367bd;
+            }
+            PrimaryPushButton:disabled {
+                color: #e7eef8;
+                background: #9fb8d6;
+                border: 1px solid #8ca9cb;
             }
             """
         )
@@ -129,9 +139,11 @@ class PluginListPanel(QWidget):
         self.hook_button.clicked.connect(self._on_hook_button_clicked)
 
     def set_plugins(self, plugins: list[PluginView], selected_plugin_id: str | None = None) -> str | None:
+        scroll_value = self.scroll_area.verticalScrollBar().value()
         self.plugins = plugins
         self._update_summary()
         self.apply_filter(selected_plugin_id=selected_plugin_id, emit_selection=False)
+        self._restore_scroll_position(scroll_value)
         return self.selected_plugin_id
 
     def apply_filter(self, _text: str | None = None, *, selected_plugin_id: str | None = None, emit_selection: bool = True) -> None:
@@ -160,6 +172,20 @@ class PluginListPanel(QWidget):
         for card_id, card in self.cards.items():
             card.set_selected(card_id == plugin_id)
 
+    def update_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
+        for plugin in self.plugins:
+            if plugin.plugin_id == plugin_id:
+                plugin.enabled = enabled
+                break
+        for plugin in self.filtered_plugins:
+            if plugin.plugin_id == plugin_id:
+                plugin.enabled = enabled
+                break
+        card = self.cards.get(plugin_id)
+        if card is not None:
+            card.set_enabled_state(enabled)
+        self._update_summary()
+
     def set_busy(self, busy: bool) -> None:
         self.refresh_button.setEnabled(not busy)
         self.sync_button.setEnabled(not busy)
@@ -180,7 +206,13 @@ class PluginListPanel(QWidget):
             self.hook_status_label.setStyleSheet("color: #9a6500; font-weight: 600;")
         else:
             self.hook_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
-        self.hook_button.setText("移除自动同步" if installed and not stale else "安装自动同步")
+        if installed and not stale:
+            button_text = "移除自动同步"
+        elif stale:
+            button_text = "修复自动同步"
+        else:
+            button_text = "安装自动同步"
+        self.hook_button.setText(button_text)
 
     def _on_hook_button_clicked(self) -> None:
         if self._hook_installed and not self._hook_stale:
@@ -224,6 +256,13 @@ class PluginListPanel(QWidget):
             self.cards[plugin.plugin_id] = card
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
+
+    def _restore_scroll_position(self, value: int) -> None:
+        def restore() -> None:
+            bar = self.scroll_area.verticalScrollBar()
+            bar.setValue(min(value, bar.maximum()))
+
+        QTimer.singleShot(0, restore)
 
     def _on_card_selected(self, plugin_id: str) -> None:
         self.set_selected_plugin(plugin_id)

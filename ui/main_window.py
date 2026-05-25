@@ -33,7 +33,7 @@ class PluginManagerWindow(QMainWindow):
         self.thread_pool = QThreadPool.globalInstance()
         self.active_workers: list[FunctionWorker] = []
 
-        self.setWindowTitle("ClauDeck")
+        self.setWindowTitle("ClauDeck 插件管理器")
         self.resize(1320, 820)
         self.setMinimumSize(1100, 700)
 
@@ -53,15 +53,15 @@ class PluginManagerWindow(QMainWindow):
         root.setContentsMargins(18, 16, 18, 12)
         root.setSpacing(14)
 
-        title = TitleLabel("Claude 插件总览", central)
-        subtitle = BodyLabel("使用 PyQt6 + Fluent 管理插件、同步状态并查看安装详情。", central)
+        title = TitleLabel("ClauDeck 插件管理", central)
+        subtitle = BodyLabel("管理 Claude Code 插件、同步启用状态，并浏览 README、Skills、Commands 与 Agents。", central)
         root.addWidget(title)
         root.addWidget(subtitle)
 
         splitter = QSplitter(central)
         splitter.addWidget(self.list_panel)
         splitter.addWidget(self.detail_panel)
-        splitter.setSizes([760, 520])
+        splitter.setSizes([560, 760])
         root.addWidget(splitter, 1)
 
         self.setCentralWidget(central)
@@ -86,6 +86,54 @@ class PluginManagerWindow(QMainWindow):
             QSplitter::handle {
                 background: #c7d6ea;
                 width: 2px;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #a9bdd6;
+                border-radius: 5px;
+                min-height: 36px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #7fa1c7;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background: #5f87b5;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
+                border: 0;
+                height: 0;
+            }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 10px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #a9bdd6;
+                border-radius: 5px;
+                min-width: 36px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #7fa1c7;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                background: #5f87b5;
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal,
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {
+                background: transparent;
+                border: 0;
+                width: 0;
             }
             QStatusBar {
                 background: #e7eef8;
@@ -168,8 +216,10 @@ class PluginManagerWindow(QMainWindow):
             return
 
         self.selected_plugin_id = plugin_id
+        self.list_panel.set_selected_plugin(plugin_id)
+        self.list_panel.update_plugin_enabled(plugin_id, enabled)
+        self._update_detail_panel()
         self.status_bar.showMessage(f"插件 {plugin_id} {'已启用' if enabled else '已禁用'}。")
-        self.refresh_plugins(sync_first=False, message="正在刷新插件状态...")
 
     def uninstall_plugin(self, plugin_id: str) -> None:
         plugin = self.plugins.get(plugin_id)

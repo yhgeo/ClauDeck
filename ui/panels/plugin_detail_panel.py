@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QListWidget, QSplitter, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, CardWidget, TitleLabel
 
 from plugin_content import PluginContentBundle, PluginContentItem
@@ -12,8 +13,8 @@ class PluginDetailPanel(CardWidget):
         super().__init__(parent)
         self.plugin: PluginView | None = None
 
-        self.title_label = TitleLabel("插件内容与用法", self)
-        self.subtitle_label = CaptionLabel("请选择左侧插件", self)
+        self.title_label = TitleLabel("插件详情", self)
+        self.subtitle_label = CaptionLabel("选择左侧插件查看内容与安装记录", self)
         self.tabs = QTabWidget(self)
         self.overview_text = self._new_text_edit()
         self.skills_list = QListWidget(self)
@@ -31,9 +32,10 @@ class PluginDetailPanel(CardWidget):
         self._connect_signals()
         self.show_empty()
 
-    def _new_text_edit(self) -> QTextEdit:
-        text_edit = QTextEdit(self)
+    def _new_text_edit(self) -> QTextBrowser:
+        text_edit = QTextBrowser(self)
         text_edit.setReadOnly(True)
+        text_edit.setOpenExternalLinks(True)
         text_edit.setObjectName("contentText")
         return text_edit
 
@@ -101,7 +103,7 @@ class PluginDetailPanel(CardWidget):
                 color: #ffffff;
                 background: #2f78d6;
             }
-            QTextEdit#contentText {
+            QTextBrowser#contentText {
                 background: #ffffff;
                 border: 1px solid #d7e2f0;
                 border-radius: 9px;
@@ -109,17 +111,22 @@ class PluginDetailPanel(CardWidget):
                 color: #142038;
                 selection-background-color: #2f78d6;
                 selection-color: #ffffff;
-                font-family: Consolas, Microsoft YaHei UI;
+                font-family: Microsoft YaHei UI;
                 font-size: 10pt;
             }
             """
         )
 
-    def _build_item_tab(self, list_widget: QListWidget, text_edit: QTextEdit) -> QSplitter:
+    def _build_item_tab(self, list_widget: QListWidget, text_edit: QTextBrowser) -> QSplitter:
+        list_widget.setMinimumWidth(240)
+        list_widget.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         splitter = QSplitter(self)
         splitter.addWidget(list_widget)
         splitter.addWidget(text_edit)
-        splitter.setSizes([180, 420])
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([260, 520])
         return splitter
 
     def _connect_signals(self) -> None:
@@ -129,21 +136,24 @@ class PluginDetailPanel(CardWidget):
 
     def set_plugin(self, plugin: PluginView | None) -> None:
         self.plugin = plugin
+        self._skills = []
+        self._commands = []
+        self._agents = []
         if plugin is None:
             self.show_empty()
             return
-        self.title_label.setText("插件内容与用法")
+        self.title_label.setText("插件详情")
         self.subtitle_label.setText(plugin.plugin_id)
-        self.overview_text.setPlainText("正在读取插件内容...")
+        self._set_content_text(self.overview_text, "正在读取插件内容...")
         self._set_items(self.skills_list, self.skills_text, [], "正在读取插件内容...")
         self._set_items(self.commands_list, self.commands_text, [], "正在读取插件内容...")
         self._set_items(self.agents_list, self.agents_text, [], "正在读取插件内容...")
-        self.install_text.setPlainText(self._build_install_text(plugin))
+        self._set_content_text(self.install_text, self._build_install_text(plugin))
 
     def set_content(self, bundle: PluginContentBundle) -> None:
         if self.plugin is None or bundle.plugin_id != self.plugin.plugin_id:
             return
-        self.overview_text.setPlainText(self._build_overview_text(bundle))
+        self._set_content_text(self.overview_text, self._build_overview_markdown(bundle), markdown=True)
         self._skills = bundle.skills
         self._commands = bundle.commands
         self._agents = bundle.agents
@@ -154,54 +164,78 @@ class PluginDetailPanel(CardWidget):
     def set_content_error(self, plugin_id: str, message: str) -> None:
         if self.plugin is None or plugin_id != self.plugin.plugin_id:
             return
-        self.overview_text.setPlainText(f"读取插件内容失败：\n{message}")
+        error_text = f"读取插件内容失败：\n{message}"
+        self._skills = []
+        self._commands = []
+        self._agents = []
+        self._set_content_text(self.overview_text, error_text)
+        self._set_items(self.skills_list, self.skills_text, [], error_text)
+        self._set_items(self.commands_list, self.commands_text, [], error_text)
+        self._set_items(self.agents_list, self.agents_text, [], error_text)
 
     def show_empty(self) -> None:
-        self.title_label.setText("插件内容与用法")
-        self.subtitle_label.setText("请选择左侧插件")
-        self.overview_text.setPlainText("请选择左侧插件。")
+        self.title_label.setText("插件详情")
+        self.subtitle_label.setText("选择左侧插件查看内容与安装记录")
+        self._set_content_text(self.overview_text, "请选择左侧插件。")
         self._set_items(self.skills_list, self.skills_text, [], "请选择左侧插件。")
         self._set_items(self.commands_list, self.commands_text, [], "请选择左侧插件。")
         self._set_items(self.agents_list, self.agents_text, [], "请选择左侧插件。")
-        self.install_text.setPlainText("暂无安装记录。")
+        self._set_content_text(self.install_text, "暂无安装记录。")
 
     def set_busy(self, busy: bool) -> None:
         self.setEnabled(not busy)
 
-    def _set_items(self, list_widget: QListWidget, text_edit: QTextEdit, items: list[PluginContentItem], empty_text: str) -> None:
+    def _set_content_text(self, text_edit: QTextBrowser, text: str, *, markdown: bool = False) -> None:
+        if markdown:
+            text_edit.setMarkdown(text)
+        else:
+            text_edit.setPlainText(text)
+        text_edit.verticalScrollBar().setValue(0)
+
+    def _set_items(self, list_widget: QListWidget, text_edit: QTextBrowser, items: list[PluginContentItem], empty_text: str) -> None:
         list_widget.clear()
         for item in items:
-            list_widget.addItem(f"{item.title}\n{item.relative_path}")
+            list_item = QListWidgetItem(f"{item.title}\n{item.relative_path}")
+            list_item.setToolTip(f"{item.title}\n{item.relative_path}\n{item.absolute_path}")
+            list_widget.addItem(list_item)
         if items:
             list_widget.setCurrentRow(0)
         else:
-            text_edit.setPlainText(empty_text)
+            self._set_content_text(text_edit, empty_text)
 
-    def _show_item(self, items: list[PluginContentItem], row: int, text_edit: QTextEdit, empty_text: str) -> None:
+    def _show_item(self, items: list[PluginContentItem], row: int, text_edit: QTextBrowser, empty_text: str) -> None:
         if row < 0 or row >= len(items):
-            text_edit.setPlainText(empty_text)
+            self._set_content_text(text_edit, empty_text)
             return
         item = items[row]
-        header = f"{item.title}\n{item.relative_path}\n\n"
+        header = f"# {item.title}\n\n`{item.relative_path}`\n\n---\n\n"
         if item.error:
-            text_edit.setPlainText(header + f"读取失败：{item.error}")
+            self._set_content_text(text_edit, header + f"读取失败：{item.error}", markdown=True)
         else:
-            text_edit.setPlainText(header + item.content)
+            self._set_content_text(text_edit, header + item.content, markdown=True)
 
-    def _build_overview_text(self, bundle: PluginContentBundle) -> str:
+    def _build_overview_markdown(self, bundle: PluginContentBundle) -> str:
         lines: list[str] = []
         if bundle.manifest:
-            lines.extend(["插件元数据", bundle.manifest.content, ""])
+            lines.extend(["## 插件元数据", ""])
+            if bundle.manifest.error:
+                lines.extend([f"读取失败：{bundle.manifest.error}", ""])
+            else:
+                lines.extend(["```text", bundle.manifest.content, "```", ""])
         if bundle.roots:
-            lines.append("安装根目录")
-            lines.extend(f"- {root}" for root in bundle.roots)
+            lines.extend(["## 安装根目录", ""])
+            lines.extend(f"- `{root}`" for root in bundle.roots)
             lines.append("")
         if bundle.errors:
-            lines.append("读取提示")
+            lines.extend(["## 读取提示", ""])
             lines.extend(f"- {error}" for error in bundle.errors)
             lines.append("")
         if bundle.readme:
-            lines.extend(["README", bundle.readme.content])
+            lines.extend(["## README", ""])
+            if bundle.readme.error:
+                lines.append(f"读取失败：{bundle.readme.error}")
+            else:
+                lines.append(bundle.readme.content)
         else:
             lines.append("未找到 README.md")
         return "\n".join(lines).strip()

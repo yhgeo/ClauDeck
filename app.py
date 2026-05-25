@@ -6,10 +6,21 @@ from pathlib import Path
 
 import hook_manager
 import settings_watcher
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import Theme, setTheme
 
 from ui.main_window import PluginManagerWindow
+
+
+def resource_path(*parts: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base.joinpath(*parts)
+
+
+def load_app_icon() -> QIcon:
+    icon_path = resource_path("assets", "claudeck.svg")
+    return QIcon(str(icon_path)) if icon_path.exists() else QIcon()
 
 
 def main() -> int:
@@ -29,8 +40,13 @@ def main() -> int:
     app.setApplicationName("ClauDeck")
     app.setOrganizationName("ClauDeck")
     setTheme(Theme.LIGHT)
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
 
     window = PluginManagerWindow(claude_dir=args.claude_dir, claude_bin=args.claude_bin)
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
     return app.exec()
 
