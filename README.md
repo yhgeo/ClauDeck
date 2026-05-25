@@ -69,6 +69,28 @@ python sync_plugins.py --json
 python settings_watcher.py
 ```
 
+### 安装自动修复 hook
+
+在 GUI 中点击 `安装自动同步`，ClauDeck 会把一个可移植的 `SessionStart` hook 写入当前用户的 `~/.claude/settings.json`。之后 Claude Code 会话启动时会自动后台启动 watcher，切换模型或配置后也会自动补回缺失的 `enabledPlugins`。
+
+这个 hook 使用你本机 clone 的项目路径生成，因此每台电脑下载项目后都需要在本机安装一次。GUI 中也可以点击 `移除自动同步` 删除该 hook；删除时只移除 ClauDeck 自己写入的 hook，不会删除其它 Claude Code hooks，也不会修改 API、URL、模型或环境变量配置。
+
+CLI 备用命令：
+
+```bash
+python hook_manager.py status --json
+python hook_manager.py install
+python hook_manager.py remove
+```
+
+如需针对临时或自定义 Claude 配置目录测试：
+
+```bash
+python hook_manager.py --claude-dir /path/to/.claude status --json
+python hook_manager.py --claude-dir /path/to/.claude install
+python hook_manager.py --claude-dir /path/to/.claude remove
+```
+
 ## Claude 配置文件
 
 ClauDeck 主要读取和维护以下文件：

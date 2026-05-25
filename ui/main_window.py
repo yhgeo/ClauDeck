@@ -7,6 +7,14 @@ from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSplitter, QStatusBar, QVBoxLayout, QWidget
 from qfluentwidgets import BodyLabel, TitleLabel
 
+from hook_manager import (
+    HookChangeResult,
+    HookManagerError,
+    HookStatus,
+    get_hook_status,
+    install_session_start_hook,
+    remove_session_start_hook,
+)
 from plugin_store import ClaudePluginStore, PluginView, StoreError
 from plugin_sync import sync_enabled_plugins
 from ui.panels.plugin_detail_panel import PluginDetailPanel
@@ -35,6 +43,7 @@ class PluginManagerWindow(QMainWindow):
 
         self._build_layout()
         self._connect_signals()
+        self.refresh_hook_status()
         self.refresh_plugins(sync_first=True, message="正在加载插件...")
 
     def _build_layout(self) -> None:
@@ -91,6 +100,8 @@ class PluginManagerWindow(QMainWindow):
         self.list_panel.syncRequested.connect(self.sync_plugins)
         self.list_panel.toggleRequested.connect(self.set_plugin_enabled)
         self.list_panel.uninstallRequested.connect(self.uninstall_plugin)
+        self.list_panel.hookInstallRequested.connect(self.install_hook)
+        self.list_panel.hookRemoveRequested.connect(self.remove_hook)
         self.detail_panel.toggleRequested.connect(self.set_plugin_enabled)
         self.detail_panel.uninstallRequested.connect(self.uninstall_plugin)
 
@@ -111,6 +122,38 @@ class PluginManagerWindow(QMainWindow):
 
         self._set_busy(True, "正在同步插件...")
         self._run_worker(task, self._on_plugins_loaded)
+
+    def refresh_hook_status(self) -> None:
+        try:
+            status = get_hook_status(self.store.claude_dir)
+        except HookManagerError as exc:
+            self.list_panel.set_hook_status(f"自动同步：读取失败（{exc}）", False, False, error=True)
+            return
+        self._apply_hook_status(status)
+
+    def install_hook(self) -> None:
+        def task() -> HookChangeResult:
+            return install_session_start_hook(self.store.claude_dir)
+
+        self._set_busy(True, "正在安装自动同步 hook...")
+        self._run_worker(task, self._on_hook_changed)
+
+    def remove_hook(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "移除自动同步",
+            "确定要移除 ClauDeck 自动同步 hook 吗？\n\n这只会删除 ClauDeck 写入的 SessionStart hook，不会删除其它 Claude Code hooks，也不会停止当前已经运行的 watcher。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        def task() -> HookChangeResult:
+            return remove_session_start_hook(self.store.claude_dir)
+
+        self._set_busy(True, "正在移除自动同步 hook...")
+        self._run_worker(task, self._on_hook_changed)
 
     def select_plugin(self, plugin_id: str) -> None:
         self.selected_plugin_id = plugin_id or None
@@ -170,6 +213,19 @@ class PluginManagerWindow(QMainWindow):
             self.selected_plugin_id = None
         self._apply_plugins(payload["plugins"])
         self.status_bar.showMessage(f"插件 {removed_plugin_id} 已卸载。")
+
+    def _on_hook_changed(self, result: HookChangeResult) -> None:
+        self._apply_hook_status(result.status)
+        self.status_bar.showMessage(result.message)
+
+    def _apply_hook_status(self, status: HookStatus) -> None:
+        if status.installed and status.stale:
+            text = "自动同步：路径已过期"
+        elif status.installed:
+            text = "自动同步：已安装"
+        else:
+            text = "自动同步：未安装"
+        self.list_panel.set_hook_status(text, status.installed, status.stale)
 
     def _apply_plugins(self, plugins: list[PluginView]) -> None:
         self.plugins = {plugin.plugin_id: plugin for plugin in plugins}

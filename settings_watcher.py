@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -16,7 +17,9 @@ from plugin_sync import sync_enabled_plugins
 
 class SingleInstanceLock:
     def __init__(self, claude_dir: Path) -> None:
-        lock_name = f"claude-plugin-sync-{abs(hash(str(claude_dir.resolve(strict=False))))}.lock"
+        resolved_dir = str(claude_dir.resolve(strict=False)).lower()
+        lock_id = hashlib.sha256(resolved_dir.encode("utf-8")).hexdigest()[:16]
+        lock_name = f"claude-plugin-sync-{lock_id}.lock"
         self.lock_path = Path(tempfile.gettempdir()) / lock_name
         self.handle: object | None = None
 

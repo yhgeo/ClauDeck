@@ -15,6 +15,8 @@ class PluginListPanel(QWidget):
     syncRequested = pyqtSignal()
     toggleRequested = pyqtSignal(str, bool)
     uninstallRequested = pyqtSignal(str)
+    hookInstallRequested = pyqtSignal()
+    hookRemoveRequested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -29,7 +31,11 @@ class PluginListPanel(QWidget):
         self.search_edit = SearchLineEdit(self)
         self.refresh_button = PushButton("刷新", self)
         self.sync_button = PrimaryPushButton("同步插件", self)
+        self.hook_status_label = BodyLabel("自动同步：检查中...", self)
+        self.hook_button = PushButton("安装自动同步", self)
         self.empty_label = BodyLabel("没有匹配的插件", self)
+        self._hook_installed = False
+        self._hook_stale = False
 
         self._build_layout()
         self._connect_signals()
@@ -54,6 +60,14 @@ class PluginListPanel(QWidget):
         toolbar.addWidget(self.refresh_button)
         toolbar.addWidget(self.sync_button)
         root.addLayout(toolbar)
+
+        hook_row = QHBoxLayout()
+        hook_row.setSpacing(8)
+        self.hook_status_label.setObjectName("hookStatusLabel")
+        self.hook_button.setObjectName("hookButton")
+        hook_row.addWidget(self.hook_status_label, 1)
+        hook_row.addWidget(self.hook_button)
+        root.addLayout(hook_row)
 
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
@@ -91,6 +105,12 @@ class PluginListPanel(QWidget):
                 color: #24324a;
                 background: transparent;
             }
+            BodyLabel#hookStatusLabel {
+                padding: 6px 10px;
+                border: 1px solid #cbd8ea;
+                border-radius: 9px;
+                background: #ffffff;
+            }
             PushButton {
                 color: #172033;
             }
@@ -106,6 +126,7 @@ class PluginListPanel(QWidget):
         self.search_edit.textChanged.connect(self.apply_filter)
         self.refresh_button.clicked.connect(self.refreshRequested.emit)
         self.sync_button.clicked.connect(self.syncRequested.emit)
+        self.hook_button.clicked.connect(self._on_hook_button_clicked)
 
     def set_plugins(self, plugins: list[PluginView], selected_plugin_id: str | None = None) -> str | None:
         self.plugins = plugins
@@ -142,9 +163,30 @@ class PluginListPanel(QWidget):
     def set_busy(self, busy: bool) -> None:
         self.refresh_button.setEnabled(not busy)
         self.sync_button.setEnabled(not busy)
+        self.hook_button.setEnabled(not busy)
         for card in self.cards.values():
             card.toggle_button.setEnabled(not busy)
             card.uninstall_button.setEnabled(not busy)
+
+    def set_hook_status(self, status_text: str, installed: bool, stale: bool, error: bool = False) -> None:
+        self._hook_installed = installed
+        self._hook_stale = stale
+        self.hook_status_label.setText(status_text)
+        if error:
+            self.hook_status_label.setStyleSheet("color: #a73525; font-weight: 600;")
+        elif installed and not stale:
+            self.hook_status_label.setStyleSheet("color: #0c6b35; font-weight: 600;")
+        elif stale:
+            self.hook_status_label.setStyleSheet("color: #9a6500; font-weight: 600;")
+        else:
+            self.hook_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
+        self.hook_button.setText("移除自动同步" if installed and not stale else "安装自动同步")
+
+    def _on_hook_button_clicked(self) -> None:
+        if self._hook_installed and not self._hook_stale:
+            self.hookRemoveRequested.emit()
+        else:
+            self.hookInstallRequested.emit()
 
     def _matches(self, plugin: PluginView, keyword: str) -> bool:
         haystacks = [
