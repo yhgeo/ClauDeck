@@ -15,6 +15,7 @@ from hook_manager import (
     install_session_start_hook,
     remove_session_start_hook,
 )
+from plugin_content import PluginContentBundle, discover_plugin_content
 from plugin_store import ClaudePluginStore, PluginView, StoreError
 from plugin_sync import sync_enabled_plugins
 from ui.panels.plugin_detail_panel import PluginDetailPanel
@@ -102,8 +103,6 @@ class PluginManagerWindow(QMainWindow):
         self.list_panel.uninstallRequested.connect(self.uninstall_plugin)
         self.list_panel.hookInstallRequested.connect(self.install_hook)
         self.list_panel.hookRemoveRequested.connect(self.remove_hook)
-        self.detail_panel.toggleRequested.connect(self.set_plugin_enabled)
-        self.detail_panel.uninstallRequested.connect(self.uninstall_plugin)
 
     def refresh_plugins(self, *, sync_first: bool, message: str) -> None:
         def task() -> dict[str, Any]:
@@ -237,6 +236,18 @@ class PluginManagerWindow(QMainWindow):
     def _update_detail_panel(self) -> None:
         plugin = self.plugins.get(self.selected_plugin_id) if self.selected_plugin_id else None
         self.detail_panel.set_plugin(plugin)
+        if plugin is None:
+            return
+
+        def task() -> PluginContentBundle:
+            return discover_plugin_content(plugin, self.store.plugin_cache_root(plugin.plugin_id))
+
+        self._run_worker(task, self._on_plugin_content_loaded, show_busy=False)
+
+    def _on_plugin_content_loaded(self, bundle: PluginContentBundle) -> None:
+        if bundle.plugin_id != self.selected_plugin_id:
+            return
+        self.detail_panel.set_content(bundle)
 
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self.list_panel.set_busy(busy)
@@ -244,7 +255,7 @@ class PluginManagerWindow(QMainWindow):
         if message:
             self.status_bar.showMessage(message)
 
-    def _run_worker(self, function, on_success) -> None:
+    def _run_worker(self, function, on_success, *, show_busy: bool = True) -> None:
         worker = FunctionWorker(function)
         self.active_workers.append(worker)
 
@@ -252,11 +263,16 @@ class PluginManagerWindow(QMainWindow):
             on_success(result.payload)
 
         def failed(error: str) -> None:
-            self._show_error("操作失败", error)
+            selected_plugin_id = self.selected_plugin_id
+            if not show_busy and selected_plugin_id:
+                self.detail_panel.set_content_error(selected_plugin_id, error)
+            else:
+                self._show_error("操作失败", error)
             self.status_bar.showMessage(f"操作失败：{error}")
 
         def finished() -> None:
-            self._set_busy(False)
+            if show_busy:
+                self._set_busy(False)
             if worker in self.active_workers:
                 self.active_workers.remove(worker)
 

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -c \"import json, subprocess, sys; data=json.load(sys.stdin); path=((data.get('tool_response') or {}).get('filePath') or (data.get('tool_input') or {}).get('file_path') or ''); files=['app.py', 'hook_manager.py', 'plugin_manager_ui.py', 'plugin_store.py', 'plugin_sync.py', 'settings_watcher.py', 'sync_plugins.py', 'claude_wrapper.py', 'ui/main_window.py', 'ui/panels/plugin_list_panel.py', 'ui/panels/plugin_detail_panel.py', 'ui/widgets/plugin_card.py', 'ui/widgets/summary_card.py', 'ui/workers/tasks.py']; sys.exit(0 if not str(path).endswith('.py') else subprocess.run([sys.executable, '-m', 'py_compile', *files]).returncode)\"",
+            "command": "python -c \"import json, subprocess, sys; data=json.load(sys.stdin); path=((data.get('tool_response') or {}).get('filePath') or (data.get('tool_input') or {}).get('file_path') or ''); files=['app.py', 'hook_manager.py', 'plugin_content.py', 'plugin_manager_ui.py', 'plugin_store.py', 'plugin_sync.py', 'settings_watcher.py', 'sync_plugins.py', 'claude_wrapper.py', 'ui/main_window.py', 'ui/panels/plugin_list_panel.py', 'ui/panels/plugin_detail_panel.py', 'ui/widgets/plugin_card.py', 'ui/widgets/summary_card.py', 'ui/workers/tasks.py']; sys.exit(0 if not str(path).endswith('.py') else subprocess.run([sys.executable, '-m', 'py_compile', *files]).returncode)\"",
             "shell": "bash",
             "timeout": 30,
             "statusMessage": "校验 Python 语法"
