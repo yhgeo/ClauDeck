@@ -1,2 +1,2 @@
 @echo off
-python "%~dp0plugin_manager_ui.py"
+python "%~dp0app.py"

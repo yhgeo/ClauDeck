@@ -14,24 +14,25 @@ class SyncResult:
 
 def sync_enabled_plugins(store: ClaudePluginStore) -> SyncResult:
     registry = store.load_installed_registry()
-    settings = store.load_settings()
-    enabled_plugins, normalized = store.normalize_enabled_plugins(settings)
-    changed = normalized
+    plugin_ids = list(registry.get("plugins", {}))
     added_plugin_ids: list[str] = []
 
-    for plugin_id in registry.get("plugins", {}):
-        if plugin_id not in enabled_plugins:
-            enabled_plugins[plugin_id] = True
-            added_plugin_ids.append(plugin_id)
-            changed = True
+    def apply(enabled_plugins: dict[str, bool]) -> bool:
+        changed = False
+        added_plugin_ids.clear()
+        for plugin_id in plugin_ids:
+            if plugin_id not in enabled_plugins:
+                enabled_plugins[plugin_id] = True
+                added_plugin_ids.append(plugin_id)
+                changed = True
+        return changed
 
-    if changed:
-        store.save_settings(settings)
+    result = store.update_enabled_plugins(apply)
 
     return SyncResult(
-        changed=changed,
+        changed=result.changed,
         added_plugin_ids=sorted(added_plugin_ids, key=str.lower),
-        normalized_enabled_plugins=normalized,
+        normalized_enabled_plugins=result.normalized,
     )
 
 

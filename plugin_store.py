@@ -7,11 +7,17 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class StoreError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class EnabledPluginsUpdateResult:
+    changed: bool
+    normalized: bool
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,42 @@ class ClaudePluginStore:
 
         return raw_enabled, False
 
+    def _file_signature(self, path: Path) -> tuple[int, int] | None:
+        if not path.exists():
+            return None
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+
+    def update_enabled_plugins(
+        self,
+        updater: Callable[[dict[str, bool]], bool],
+        *,
+        max_attempts: int = 3,
+    ) -> EnabledPluginsUpdateResult:
+        for _ in range(max_attempts):
+            before_signature = self._file_signature(self.settings_path)
+            settings = self.load_settings()
+            after_signature = self._file_signature(self.settings_path)
+            if before_signature != after_signature:
+                continue
+
+            enabled_plugins, normalized = self.normalize_enabled_plugins(settings)
+            updated_enabled_plugins = dict(enabled_plugins)
+            updater_changed = updater(updated_enabled_plugins)
+            changed = normalized or updater_changed or updated_enabled_plugins != enabled_plugins
+
+            if not changed:
+                return EnabledPluginsUpdateResult(changed=False, normalized=False)
+
+            if self._file_signature(self.settings_path) != after_signature:
+                continue
+
+            settings["enabledPlugins"] = updated_enabled_plugins
+            self._write_json(self.settings_path, settings)
+            return EnabledPluginsUpdateResult(changed=True, normalized=normalized)
+
+        raise StoreError(f"Settings changed while updating enabledPlugins: {self.settings_path}")
+
     def list_plugin_ids(self) -> list[str]:
         registry = self.load_installed_registry()
         return sorted(registry.get("plugins", {}).keys(), key=str.lower)
@@ -183,10 +225,13 @@ class ClaudePluginStore:
         raise StoreError(f"Plugin not found: {plugin_id}")
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
-        settings = self.load_settings()
-        enabled_plugins, _ = self.normalize_enabled_plugins(settings)
-        enabled_plugins[plugin_id] = enabled
-        self.save_settings(settings)
+        def apply(enabled_plugins: dict[str, bool]) -> bool:
+            if enabled_plugins.get(plugin_id) is enabled:
+                return False
+            enabled_plugins[plugin_id] = enabled
+            return True
+
+        self.update_enabled_plugins(apply)
 
     def remove_plugin_from_registry(self, plugin_id: str) -> bool:
         registry = self.load_installed_registry()
@@ -198,15 +243,18 @@ class ClaudePluginStore:
         return True
 
     def remove_plugin_from_settings(self, plugin_id: str) -> bool:
-        settings = self.load_settings()
-        enabled_plugins, changed = self.normalize_enabled_plugins(settings)
-        if plugin_id not in enabled_plugins:
-            if changed:
-                self.save_settings(settings)
-            return False
-        del enabled_plugins[plugin_id]
-        self.save_settings(settings)
-        return True
+        removed = False
+
+        def apply(enabled_plugins: dict[str, bool]) -> bool:
+            nonlocal removed
+            if plugin_id not in enabled_plugins:
+                return False
+            del enabled_plugins[plugin_id]
+            removed = True
+            return True
+
+        self.update_enabled_plugins(apply)
+        return removed
 
     def plugin_cache_root(self, plugin_id: str) -> Path:
         name, publisher = split_plugin_id(plugin_id)

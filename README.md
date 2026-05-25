@@ -1,6 +1,6 @@
 # ClauDeck
 
-ClauDeck 是一个用于管理 Claude Code plugins 的桌面工具。
+ClauDeck 是一个用于管理 Claude Code plugins 的桌面工具，当前桌面界面已迁移到 PyQt6 + Fluent 风格。
 
 它解决两个核心问题：
 - 可视化查看、启用/禁用、卸载已安装 plugins
@@ -8,6 +8,7 @@ ClauDeck 是一个用于管理 Claude Code plugins 的桌面工具。
 
 ## 功能
 
+- PyQt6 + Fluent 风格桌面界面
 - 左侧插件卡片列表，右侧常驻详情面板
 - 查看已安装插件、发布方、版本、作用域和安装记录
 - 一键启用 / 禁用插件
@@ -17,7 +18,9 @@ ClauDeck 是一个用于管理 Claude Code plugins 的桌面工具。
 
 ## 主要文件
 
-- `plugin_manager_ui.py`：桌面管理界面
+- `app.py`：PyQt6 GUI 启动入口
+- `ui/`：PyQt6 + Fluent 界面模块
+- `plugin_manager_ui.py`：旧 Tkinter 界面参考实现，暂时保留用于回退
 - `plugin_store.py`：插件与设置文件读写逻辑
 - `plugin_sync.py`：`enabledPlugins` 同步逻辑
 - `sync_plugins.py`：单次同步入口
@@ -28,8 +31,15 @@ ClauDeck 是一个用于管理 Claude Code plugins 的桌面工具。
 ## 依赖
 
 - Python 3.10+
-- Tkinter
+- PyQt6
+- PyQt6-Fluent-Widgets
 - 已安装并可调用 `claude`
+
+安装 GUI 依赖：
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 ## 快速开始
 
@@ -44,7 +54,7 @@ run_plugin_manager.bat
 或：
 
 ```bash
-python plugin_manager_ui.py
+python app.py
 ```
 
 ### 手动执行一次同步
