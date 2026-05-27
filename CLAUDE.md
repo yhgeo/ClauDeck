@@ -59,7 +59,7 @@ python hook_manager.py --json stop-watcher
 Build a Windows executable with PyInstaller:
 
 ```bash
-python -m PyInstaller --noconfirm --clean --windowed --name ClauDeck --add-data "assets/claudeck.svg;assets" app.py
+python -m PyInstaller --noconfirm --clean --windowed --name ClauDeck --add-data "assets;assets" app.py
 ```
 
 There is no dedicated test suite in this repository yet. Use focused temporary `.claude` directories plus the compile command and CLI smoke checks above when changing sync, watcher, hook, or packaging behavior. For UI work, also launch the GUI and verify the main flow manually when possible.
@@ -77,18 +77,18 @@ This dispatch is required for PyInstaller builds, where the installed SessionSta
 
 `plugin_store.py` is the data access layer. It reads/writes Claude plugin registry and settings, builds `PluginView` objects, toggles plugins, uninstalls plugins, and cleans plugin cache/registry state. Changes to `enabledPlugins` should go through `ClaudePluginStore.update_enabled_plugins()` so unrelated settings such as API keys, base URLs, model/provider configuration, and environment variables are preserved during concurrent writes.
 
-`plugin_sync.py` contains the shared sync logic. It adds installed plugin IDs that are missing from `enabledPlugins` and preserves existing disabled (`false`) plugins. Use this module from GUI, CLI, watcher, and wrapper paths rather than duplicating sync rules.
+`plugin_sync.py` contains the shared sync logic. In one-way mode, ClauDeck treats `desiredEnabledPlugins` as the source of truth; missing global plugin desired states are seeded to enabled so external Claude Code/settings disables are repaired. In two-way mode, external settings are accepted and written back into ClauDeck state. Use this module from GUI, CLI, watcher, and wrapper paths rather than duplicating sync rules.
 
 `settings_watcher.py` is a polling watcher for `settings.json` and `plugins/installed_plugins.json`. It uses a per-Claude-directory single-instance lock and writes logs to `~/.claude/logs/plugin_sync_watcher.log`. Watcher logs are pruned automatically and only keep the last 2 days of timestamped records.
 
-`hook_manager.py` installs, updates, removes, launches, and stops the managed watcher for the user-level Claude Code `SessionStart` hook. It only manages commands containing the marker `claudeck-plugin-sync-v1`; do not remove or rewrite unrelated hooks. In source mode it generates a Python command for `hook_manager.py`; in frozen mode it generates an executable command for `ClauDeck.exe`. `stop-watcher` stops the current watcher process but does not remove the hook, so a later SessionStart can launch it again.
+`hook_manager.py` installs, updates, removes, launches, and stops the managed watcher for the user-level Claude Code `SessionStart` hook. It only manages commands containing the marker `claudeck-plugin-sync-v1`; do not remove or rewrite unrelated hooks. In source mode it generates a Python command for `hook_manager.py`; in frozen mode it generates an executable command for `ClauDeck.exe`. `stop-watcher` stops the current watcher process but does not remove the hook, so a later SessionStart or the GUI `启动 Watcher` action can launch it again.
 
 `plugin_content.py` is a read-only plugin content browser helper. It discovers known plugin package content such as `.claude-plugin/plugin.json`, manifest `hooks`, `README.md`, `skills/*/SKILL.md`, `hooks/*.{md,json,toml,yaml,yml}`, `commands/*.md`, and `agents/*.md`. It should not execute plugin content or read arbitrary paths outside discovered plugin roots.
 
 The PyQt6 UI is split by responsibility:
 
-- `ui/main_window.py` owns the store, selected plugin state, hook actions, watcher stop action, sync/uninstall handlers, and background workers. The main splitter defaults the left plugin list to its current minimum usable width so the detail panel gets maximum space.
-- `ui/panels/plugin_list_panel.py` renders the left-side search, summary cards, hook/watcher status/action, info tooltips, and plugin card list. Enabled plugins sort before disabled plugins.
+- `ui/main_window.py` owns the store, selected plugin state, hook actions, watcher start/stop actions, sync/uninstall handlers, and background workers. The main splitter keeps the left plugin list at `PLUGIN_LIST_PANEL_WIDTH` so the detail panel gets maximum space.
+- `ui/panels/plugin_list_panel.py` renders the left-side search, summary cards, hook/watcher status/action, info tooltips, and plugin card list. Enabled plugins sort before disabled plugins. The watcher button is stateful: it starts watcher when stopped and stops watcher when running. Hook/watcher info badges sit after the status card and action button.
 - `ui/panels/plugin_detail_panel.py` renders the right-side content browser for README, Skills, Hooks, Agents, Commands, and install records. Content tabs should keep the order Skills, Hooks, Agents, Commands.
 - `ui/widgets/plugin_card.py` renders plugin summary/action cards.
 - `ui/widgets/summary_card.py` renders count summary cards.

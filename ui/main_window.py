@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from plugin_content import PluginContentBundle, discover_plugin_content
 from plugin_store import ClaudePluginStore, PluginView, StoreError
 from plugin_sync import sync_enabled_plugins
 from ui.panels.plugin_detail_panel import PluginDetailPanel
-from ui.panels.plugin_list_panel import PluginListPanel
+from ui.panels.plugin_list_panel import PLUGIN_LIST_PANEL_WIDTH, PluginListPanel
 from ui.workers.tasks import FunctionWorker, TaskResult
 
 
@@ -39,8 +40,8 @@ class PluginManagerWindow(QMainWindow):
         self.active_workers: list[FunctionWorker] = []
 
         self.setWindowTitle("ClauDeck 插件管理器")
-        self.resize(1320, 820)
-        self.setMinimumSize(1100, 700)
+        self.resize(1320, 825)
+        self.setMinimumSize(900, 560)
 
         self.list_panel = PluginListPanel(self)
         self.detail_panel = PluginDetailPanel(self)
@@ -76,12 +77,11 @@ class PluginManagerWindow(QMainWindow):
         splitter = QSplitter(central)
         splitter.addWidget(self.list_panel)
         splitter.addWidget(self.detail_panel)
-        list_width = self.list_panel.minimumSizeHint().width()
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([list_width, max(760, self.width() - list_width)])
+        splitter.setSizes([PLUGIN_LIST_PANEL_WIDTH, max(760, self.width() - PLUGIN_LIST_PANEL_WIDTH)])
         root.addWidget(splitter, 1)
 
         self.setCentralWidget(central)
@@ -171,6 +171,7 @@ class PluginManagerWindow(QMainWindow):
         self.list_panel.uninstallRequested.connect(self.uninstall_plugin)
         self.list_panel.hookInstallRequested.connect(self.install_hook)
         self.list_panel.hookRemoveRequested.connect(self.remove_hook)
+        self.list_panel.watcherStartRequested.connect(self.start_watcher)
         self.list_panel.watcherStopRequested.connect(self.stop_watcher)
         self.list_panel.syncPluginCountChanged.connect(self.set_sync_plugin_count)
         self.list_panel.syncPluginEnabledStateChanged.connect(self.set_sync_plugin_enabled_state)
@@ -262,6 +263,21 @@ class PluginManagerWindow(QMainWindow):
 
         self._set_busy(True, "正在移除会话启动 hook...")
         self._run_worker(task, self._on_hook_changed)
+
+    def start_watcher(self) -> None:
+        def task() -> dict[str, Any]:
+            run_session_start_sync(self.store.claude_dir, self.store.project_dir)
+            watcher_status = get_watcher_status(self.store.claude_dir)
+            for _ in range(10):
+                if watcher_status.running:
+                    break
+                time.sleep(0.2)
+                watcher_status = get_watcher_status(self.store.claude_dir)
+            plugins = self.store.build_plugin_views()
+            return {"plugins": plugins, "watcher_status": watcher_status}
+
+        self._set_busy(True, "正在启动后台 watcher...")
+        self._run_worker(task, self._on_watcher_started)
 
     def stop_watcher(self) -> None:
         reply = QMessageBox.question(
@@ -366,23 +382,39 @@ class PluginManagerWindow(QMainWindow):
         self.refresh_hook_status()
         self.status_bar.showMessage(result.message)
 
+    def _on_watcher_started(self, payload: dict[str, Any]) -> None:
+        self.refresh_hook_status()
+        self._apply_plugins(payload["plugins"])
+        watcher_status = payload["watcher_status"]
+        self.status_bar.showMessage(watcher_status.message)
+
     def _on_watcher_stopped(self, result: WatcherStopResult) -> None:
         self.refresh_hook_status()
         self.status_bar.showMessage(result.message)
 
     def _apply_hook_status(self, hook_status: HookStatus, watcher_status: WatcherRuntimeStatus) -> None:
         if hook_status.installed and hook_status.stale:
-            hook_text = "会话启动 hook：需更新"
+            hook_text = "Hook：需更新"
         elif hook_status.installed:
-            hook_text = "会话启动 hook：已安装"
+            hook_text = "Hook：已安装"
         else:
-            hook_text = "会话启动 hook：未安装"
+            hook_text = "Hook：未安装"
+        if watcher_status.running and watcher_status.stale:
+            watcher_text = "Watcher：旧版"
+        elif watcher_status.running:
+            watcher_text = "Watcher：运行中"
+        elif watcher_status.stale:
+            watcher_text = "Watcher：旧版停止"
+        else:
+            watcher_text = "Watcher：未运行"
         self.list_panel.set_hook_status(
             hook_text,
-            watcher_status.message,
+            watcher_text,
             hook_status.installed,
             hook_status.stale,
             watcher_status.running,
+            hook_tooltip=hook_status.message,
+            watcher_tooltip=watcher_status.message,
         )
 
     def _apply_plugins(self, plugins: list[PluginView]) -> None:

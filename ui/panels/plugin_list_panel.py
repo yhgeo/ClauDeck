@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
     BodyLabel,
@@ -18,6 +18,9 @@ from ui.widgets.plugin_card import PluginCard
 from ui.widgets.summary_card import SummaryCard
 
 
+PLUGIN_LIST_PANEL_WIDTH = 300
+
+
 class PluginListPanel(QWidget):
     pluginSelected = pyqtSignal(str)
     refreshRequested = pyqtSignal()
@@ -26,6 +29,7 @@ class PluginListPanel(QWidget):
     uninstallRequested = pyqtSignal(str)
     hookInstallRequested = pyqtSignal()
     hookRemoveRequested = pyqtSignal()
+    watcherStartRequested = pyqtSignal()
     watcherStopRequested = pyqtSignal()
     syncPluginCountChanged = pyqtSignal(bool)
     syncPluginEnabledStateChanged = pyqtSignal(bool)
@@ -44,14 +48,13 @@ class PluginListPanel(QWidget):
 
         self.total_card = SummaryCard("插件总数", self)
         self.enabled_card = SummaryCard("已启用", self)
-        self.disabled_card = SummaryCard("已禁用", self)
         self.search_edit = SearchLineEdit(self)
         self.refresh_button = PushButton("刷新", self)
         self.sync_button = PrimaryPushButton("同步插件", self)
         self.hook_status_label = BodyLabel("会话启动 hook：检查中...", self)
         self.watcher_status_label = BodyLabel("后台 watcher：检查中...", self)
-        self.hook_button = PushButton("安装会话启动 hook", self)
-        self.watcher_stop_button = PushButton("停止 watcher", self)
+        self.hook_button = PushButton("安装 Hook", self)
+        self.watcher_stop_button = PushButton("启动 Watcher", self)
         self.hook_info_label = self._new_info_label(
             "SessionStart hook 是写入 Claude Code settings.json 的启动钩子。安装后，新会话启动时会先同步插件并启动后台 watcher。"
         )
@@ -61,61 +64,66 @@ class PluginListPanel(QWidget):
         self.empty_label = BodyLabel("没有匹配的插件", self)
         self.sync_button.setToolTip("立即按当前同步策略检查并修复 enabledPlugins。")
         self.hook_button.setToolTip("安装、更新或移除 ClauDeck 管理的 Claude Code SessionStart hook。")
-        self.watcher_stop_button.setToolTip("停止当前正在运行的后台 watcher；不会移除 SessionStart hook。")
+        self.watcher_stop_button.setToolTip("启动或停止 ClauDeck 后台 watcher；不会移除 SessionStart hook。")
+        self.hook_status_label.setFixedWidth(128)
+        self.watcher_status_label.setFixedWidth(128)
+        self.hook_button.setFixedWidth(108)
+        self.watcher_stop_button.setFixedWidth(108)
 
         self._build_layout()
         self._build_settings_menu()
         self._connect_signals()
         self._update_settings_actions()
+        self.setFixedWidth(PLUGIN_LIST_PANEL_WIDTH)
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 12, 0)
+        root.setSpacing(6)
 
         metrics = QHBoxLayout()
-        metrics.setSpacing(10)
+        metrics.setSpacing(6)
         metrics.addWidget(self.total_card)
         metrics.addWidget(self.enabled_card)
-        metrics.addWidget(self.disabled_card)
-        metrics.addStretch(1)
         root.addLayout(metrics)
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
-        self.search_edit.setPlaceholderText("搜索插件名称、发布方、版本或作用域")
-        toolbar.addWidget(self.search_edit, 1)
-        toolbar.addWidget(self.refresh_button)
-        toolbar.addWidget(self.sync_button)
+        toolbar = QGridLayout()
+        toolbar.setHorizontalSpacing(6)
+        toolbar.setVerticalSpacing(4)
+        self.search_edit.setPlaceholderText("搜索插件")
+        toolbar.addWidget(self.search_edit, 0, 0, 1, 2)
+        toolbar.addWidget(self.refresh_button, 1, 0)
+        toolbar.addWidget(self.sync_button, 1, 1)
         root.addLayout(toolbar)
 
         hook_row = QVBoxLayout()
-        hook_row.setSpacing(8)
+        hook_row.setSpacing(4)
         self.hook_status_label.setObjectName("hookStatusLabel")
         self.watcher_status_label.setObjectName("watcherStatusLabel")
         hook_header = QHBoxLayout()
-        hook_header.setSpacing(8)
+        hook_header.setSpacing(4)
         hook_header.addWidget(self.hook_status_label, 1)
-        hook_header.addWidget(self.hook_info_label)
         hook_header.addWidget(self.hook_button)
+        hook_header.addWidget(self.hook_info_label)
         hook_row.addLayout(hook_header)
         watcher_header = QHBoxLayout()
-        watcher_header.setSpacing(8)
+        watcher_header.setSpacing(4)
         watcher_header.addWidget(self.watcher_status_label, 1)
-        watcher_header.addWidget(self.watcher_info_label)
         watcher_header.addWidget(self.watcher_stop_button)
+        watcher_header.addWidget(self.watcher_info_label)
         hook_row.addLayout(watcher_header)
         root.addLayout(hook_row)
 
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setObjectName("pluginScrollArea")
 
         self.cards_host = QWidget(self.scroll_area)
         self.cards_layout = QVBoxLayout(self.cards_host)
-        self.cards_layout.setContentsMargins(0, 0, 8, 0)
-        self.cards_layout.setSpacing(12)
+        self.cards_layout.setContentsMargins(0, 0, 16, 0)
+        self.cards_layout.setSpacing(6)
         self.cards_layout.addStretch(1)
         self.scroll_area.setWidget(self.cards_host)
         root.addWidget(self.scroll_area, 1)
@@ -152,9 +160,9 @@ class PluginListPanel(QWidget):
             }
             BodyLabel#hookStatusLabel,
             BodyLabel#watcherStatusLabel {
-                padding: 6px 10px;
+                padding: 4px 6px;
                 border: 1px solid #cbd8ea;
-                border-radius: 9px;
+                border-radius: 7px;
                 background: #ffffff;
             }
             PushButton {
@@ -182,7 +190,7 @@ class PluginListPanel(QWidget):
         label = QLabel("!", self)
         label.setObjectName("infoBadge")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setFixedSize(18, 18)
+        label.setFixedSize(16, 16)
         label.setToolTip(tooltip)
         return label
 
@@ -203,7 +211,7 @@ class PluginListPanel(QWidget):
         self.refresh_button.clicked.connect(self.refreshRequested.emit)
         self.sync_button.clicked.connect(self.syncRequested.emit)
         self.hook_button.clicked.connect(self._on_hook_button_clicked)
-        self.watcher_stop_button.clicked.connect(self.watcherStopRequested.emit)
+        self.watcher_stop_button.clicked.connect(self._on_watcher_button_clicked)
 
     def set_plugins(self, plugins: list[PluginView], selected_plugin_id: str | None = None) -> str | None:
         scroll_value = self.scroll_area.verticalScrollBar().value()
@@ -261,7 +269,7 @@ class PluginListPanel(QWidget):
         self.refresh_button.setEnabled(not busy)
         self.sync_button.setEnabled(not busy)
         self.hook_button.setEnabled(not busy)
-        self._update_watcher_stop_button(not busy)
+        self._update_watcher_button(not busy)
         for card in self.cards.values():
             card.toggle_button.setEnabled(not busy)
             card.uninstall_button.setEnabled(not busy)
@@ -274,12 +282,16 @@ class PluginListPanel(QWidget):
         stale: bool,
         watcher_running: bool = False,
         error: bool = False,
+        hook_tooltip: str | None = None,
+        watcher_tooltip: str | None = None,
     ) -> None:
         self._hook_installed = installed
         self._hook_stale = stale
         self._watcher_running = watcher_running
         self.hook_status_label.setText(hook_text)
         self.watcher_status_label.setText(watcher_text)
+        self.hook_status_label.setToolTip(hook_tooltip or hook_text)
+        self.watcher_status_label.setToolTip(watcher_tooltip or watcher_text)
         if error:
             self.hook_status_label.setStyleSheet("color: #a73525; font-weight: 600;")
             self.watcher_status_label.setStyleSheet("color: #a73525; font-weight: 600;")
@@ -293,22 +305,34 @@ class PluginListPanel(QWidget):
             self.hook_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
             self.watcher_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
         if installed and not stale:
-            button_text = "移除会话启动 hook"
+            button_text = "移除 Hook"
         elif stale:
-            button_text = "更新会话启动 hook"
+            button_text = "更新 Hook"
         else:
-            button_text = "安装会话启动 hook"
+            button_text = "安装 Hook"
         self.hook_button.setText(button_text)
-        self._update_watcher_stop_button(True)
+        if watcher_running:
+            self.watcher_stop_button.setText("停止 Watcher")
+            self.watcher_stop_button.setToolTip("停止当前正在运行的后台 watcher；不会移除 SessionStart hook。")
+        else:
+            self.watcher_stop_button.setText("启动 Watcher")
+            self.watcher_stop_button.setToolTip("立即启动后台 watcher，并先执行一次插件同步。")
+        self._update_watcher_button(True)
 
-    def _update_watcher_stop_button(self, controls_enabled: bool) -> None:
-        self.watcher_stop_button.setEnabled(controls_enabled and self._watcher_running)
+    def _update_watcher_button(self, controls_enabled: bool) -> None:
+        self.watcher_stop_button.setEnabled(controls_enabled)
 
     def _on_hook_button_clicked(self) -> None:
         if self._hook_installed and not self._hook_stale:
             self.hookRemoveRequested.emit()
         else:
             self.hookInstallRequested.emit()
+
+    def _on_watcher_button_clicked(self) -> None:
+        if self._watcher_running:
+            self.watcherStopRequested.emit()
+        else:
+            self.watcherStartRequested.emit()
 
     def show_settings_menu(self, global_pos) -> None:
         self._update_settings_actions()
@@ -359,7 +383,6 @@ class PluginListPanel(QWidget):
         enabled_count = sum(1 for plugin in self.plugins if plugin.enabled)
         self.total_card.set_value(len(self.plugins))
         self.enabled_card.set_value(enabled_count)
-        self.disabled_card.set_value(len(self.plugins) - enabled_count)
 
     def _render_cards(self) -> None:
         while self.cards_layout.count() > 0:

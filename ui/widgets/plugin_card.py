@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, CaptionLabel, CardWidget, PushButton, StrongBodyLabel
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from qfluentwidgets import CaptionLabel, CardWidget, PushButton, StrongBodyLabel
 
 from plugin_store import PluginView
 
@@ -22,13 +22,16 @@ class PluginCard(CardWidget):
         self.title_label = StrongBodyLabel(plugin.name, self)
         self.status_badge = QLabel("已启用" if plugin.enabled else "已禁用", self)
         self.status_badge.setObjectName("statusBadge")
-        self.id_label = CaptionLabel(plugin.plugin_id, self)
-        self.publisher_value = BodyLabel(plugin.publisher or "-", self)
-        self.version_value = BodyLabel(plugin.display_version, self)
-        self.scope_value = BodyLabel("、".join(plugin.scopes) if plugin.scopes else "-", self)
-        self.toggle_button = PushButton("禁用插件" if plugin.enabled else "启用插件", self)
-        self.uninstall_button = PushButton("卸载插件", self)
+        self.publisher_line = CaptionLabel(f"发布方：{plugin.publisher or '-'}", self)
+        self.version_scope_line = CaptionLabel(
+            f"版本：{plugin.display_version}    作用域：{'、'.join(plugin.scopes) if plugin.scopes else '-'}",
+            self,
+        )
+        self.toggle_button = PushButton("禁用" if plugin.enabled else "启用", self)
+        self.uninstall_button = PushButton("卸载", self)
         self.uninstall_button.setObjectName("uninstallButton")
+        self.toggle_button.setFixedWidth(82)
+        self.uninstall_button.setFixedWidth(82)
 
         self._build_layout()
         self._connect_signals()
@@ -36,42 +39,24 @@ class PluginCard(CardWidget):
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
         title_row = QHBoxLayout()
-        title_row.setSpacing(10)
+        title_row.setSpacing(5)
         title_row.addWidget(self.title_label, 1)
         title_row.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignRight)
         root.addLayout(title_row)
-        root.addWidget(self.id_label)
-
-        meta_grid = QGridLayout()
-        meta_grid.setHorizontalSpacing(10)
-        meta_grid.setVerticalSpacing(8)
-        self._add_meta_block(meta_grid, 0, 0, "发布方", self.publisher_value)
-        self._add_meta_block(meta_grid, 0, 1, "版本", self.version_value)
-        self._add_meta_block(meta_grid, 0, 2, "作用域", self.scope_value)
-        root.addLayout(meta_grid)
+        self.publisher_line.setWordWrap(True)
+        self.version_scope_line.setWordWrap(True)
+        root.addWidget(self.publisher_line)
+        root.addWidget(self.version_scope_line)
 
         action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        action_row.setSpacing(6)
         action_row.addWidget(self.toggle_button)
         action_row.addWidget(self.uninstall_button)
-        action_row.addStretch(1)
         root.addLayout(action_row)
-
-    def _add_meta_block(self, layout: QGridLayout, row: int, column: int, title: str, value_widget: BodyLabel) -> None:
-        block = QFrame(self)
-        block.setObjectName("metaBlock")
-        block_layout = QVBoxLayout(block)
-        block_layout.setContentsMargins(10, 8, 10, 8)
-        block_layout.setSpacing(4)
-        title_label = CaptionLabel(title, block)
-        value_widget.setWordWrap(True)
-        block_layout.addWidget(title_label)
-        block_layout.addWidget(value_widget)
-        layout.addWidget(block, row, column)
 
     def _connect_signals(self) -> None:
         self.toggle_button.clicked.connect(
@@ -93,7 +78,7 @@ class PluginCard(CardWidget):
     def set_enabled_state(self, enabled: bool) -> None:
         self.plugin.enabled = enabled
         self.status_badge.setText("已启用" if enabled else "已禁用")
-        self.toggle_button.setText("禁用插件" if enabled else "启用插件")
+        self.toggle_button.setText("禁用" if enabled else "启用")
         self._apply_style()
 
     def _apply_style(self) -> None:
@@ -102,14 +87,13 @@ class PluginCard(CardWidget):
         badge_bg = "#dff5e7" if self.plugin.enabled else "#fff1f0"
         badge_fg = "#0c6b35" if self.plugin.enabled else "#b42318"
         badge_border = "#0c6b35" if self.plugin.enabled else "#f1a6a0"
-        meta_bg = "#f3f8ff" if self.plugin.enabled else "#f6f8fb"
 
         self.setStyleSheet(
             f"""
             PluginCard {{
                 background: {selected_bg};
                 border: 1px solid {selected_border};
-                border-radius: 14px;
+                border-radius: 10px;
             }}
             PluginCard:hover {{
                 border: 1px solid #2f78d6;
@@ -118,12 +102,8 @@ class PluginCard(CardWidget):
             StrongBodyLabel {{
                 color: #111a2d;
                 background: transparent;
-                font-size: 15px;
+                font-size: 13px;
                 font-weight: 700;
-            }}
-            BodyLabel {{
-                color: #1f2d43;
-                background: transparent;
             }}
             CaptionLabel {{
                 color: #596a82;
@@ -137,14 +117,9 @@ class PluginCard(CardWidget):
                 color: {badge_fg};
                 background: {badge_bg};
                 border: 1px solid {badge_border};
-                border-radius: 10px;
-                padding: 4px 10px;
+                border-radius: 8px;
+                padding: 2px 6px;
                 font-weight: 700;
-            }}
-            QFrame#metaBlock {{
-                background: {meta_bg};
-                border: 1px solid #d7e2f0;
-                border-radius: 9px;
             }}
             PushButton {{
                 color: #172033;

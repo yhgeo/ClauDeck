@@ -19,8 +19,11 @@ def resource_path(*parts: str) -> Path:
 
 
 def load_app_icon() -> QIcon:
-    icon_path = resource_path("assets", "claudeck.svg")
-    return QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+    for icon_name in ("claudeck.png", "claudeck.svg"):
+        icon_path = resource_path("assets", icon_name)
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+    return QIcon()
 
 
 def main() -> int:

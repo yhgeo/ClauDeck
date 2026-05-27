@@ -11,19 +11,19 @@ class SummaryCard(CardWidget):
         self.value_label = StrongBodyLabel("0", self)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 5, 6, 5)
+        layout.setSpacing(2)
         layout.addWidget(self.title_label)
         layout.addWidget(self.value_label)
 
-        self.setMinimumWidth(120)
+        self.setMinimumWidth(0)
         self.setObjectName("summaryCard")
         self.setStyleSheet(
             """
             SummaryCard#summaryCard {
                 background: #ffffff;
                 border: 1px solid #cbd8ea;
-                border-radius: 12px;
+                border-radius: 8px;
             }
             BodyLabel {
                 color: #59687d;
@@ -32,7 +32,7 @@ class SummaryCard(CardWidget):
             StrongBodyLabel {
                 color: #132036;
                 background: transparent;
-                font-size: 18px;
+                font-size: 13px;
                 font-weight: 700;
             }
             """

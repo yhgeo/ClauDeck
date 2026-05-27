@@ -47,17 +47,11 @@ def sync_enabled_plugins(store: ClaudePluginStore) -> SyncResult:
     if preferences.sync_plugin_enabled_state:
         desired_enabled_plugins, desired_seeded_plugin_ids = seed_missing_desired_enabled_plugins(
             plugin_ids=plan.global_plugin_ids,
-            layers=store.settings_layers(),
-            explicit_state_by_layer=explicit_state_by_layer,
             desired_enabled_plugins=stored_desired_enabled_plugins,
-            fallback_disabled_plugin_ids=disabled_plugin_ids,
         )
         canonical_enabled_state = build_canonical_enabled_state(
             plugin_ids=plan.global_plugin_ids,
-            layers=store.settings_layers(),
-            explicit_state_by_layer=explicit_state_by_layer,
             desired_enabled_plugins=desired_enabled_plugins,
-            fallback_disabled_plugin_ids=disabled_plugin_ids,
         )
         accepted_plugin_ids: set[str] = set()
         state_sync_mode = "one_way"
@@ -131,27 +125,14 @@ def sync_enabled_plugins(store: ClaudePluginStore) -> SyncResult:
 def seed_missing_desired_enabled_plugins(
     *,
     plugin_ids: set[str],
-    layers: list[SettingsLayer],
-    explicit_state_by_layer: dict[SettingsLayer, dict[str, bool]],
     desired_enabled_plugins: dict[str, bool],
-    fallback_disabled_plugin_ids: set[str],
 ) -> tuple[dict[str, bool], set[str]]:
     seeded_state = dict(desired_enabled_plugins)
     seeded_plugin_ids: set[str] = set()
-    sorted_layers = sorted(layers, key=lambda layer: layer.precedence, reverse=True)
     for plugin_id in sorted(plugin_ids, key=str.lower):
         if plugin_id in seeded_state:
             continue
-        resolved = None
-        for layer in sorted_layers:
-            layer_state = explicit_state_by_layer.get(layer)
-            if layer_state is None or plugin_id not in layer_state:
-                continue
-            resolved = layer_state[plugin_id]
-            break
-        if resolved is None:
-            resolved = plugin_id not in fallback_disabled_plugin_ids
-        seeded_state[plugin_id] = resolved
+        seeded_state[plugin_id] = True
         seeded_plugin_ids.add(plugin_id)
     return seeded_state, seeded_plugin_ids
 
@@ -159,27 +140,14 @@ def seed_missing_desired_enabled_plugins(
 def build_canonical_enabled_state(
     *,
     plugin_ids: set[str],
-    layers: list[SettingsLayer],
-    explicit_state_by_layer: dict[SettingsLayer, dict[str, bool]],
     desired_enabled_plugins: dict[str, bool],
-    fallback_disabled_plugin_ids: set[str],
 ) -> dict[str, bool]:
     canonical_state: dict[str, bool] = {}
-    sorted_layers = sorted(layers, key=lambda layer: layer.precedence, reverse=True)
     for plugin_id in sorted(plugin_ids, key=str.lower):
         if plugin_id in desired_enabled_plugins:
             canonical_state[plugin_id] = desired_enabled_plugins[plugin_id]
-            continue
-        resolved = None
-        for layer in sorted_layers:
-            layer_state = explicit_state_by_layer.get(layer)
-            if layer_state is None or plugin_id not in layer_state:
-                continue
-            resolved = layer_state[plugin_id]
-            break
-        if resolved is None:
-            resolved = plugin_id not in fallback_disabled_plugin_ids
-        canonical_state[plugin_id] = resolved
+        else:
+            canonical_state[plugin_id] = True
     return canonical_state
 
 
@@ -269,10 +237,7 @@ def plugin_sync_health(store: ClaudePluginStore) -> dict[str, object]:
     desired_enabled_plugins = store.load_desired_enabled_plugins()
     canonical_state = build_canonical_enabled_state(
         plugin_ids=plan.global_plugin_ids,
-        layers=layers,
-        explicit_state_by_layer=explicit_state_by_layer,
         desired_enabled_plugins=desired_enabled_plugins,
-        fallback_disabled_plugin_ids=store.load_disabled_plugin_ids(),
     )
     installed_plugin_ids = sorted(registry.get("plugins", {}).keys(), key=str.lower)
     global_plugin_ids = sorted(plan.global_plugin_ids, key=str.lower)
