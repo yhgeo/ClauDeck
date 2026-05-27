@@ -19,12 +19,15 @@ class PluginDetailPanel(CardWidget):
         self.overview_text = self._new_text_edit()
         self.skills_list = QListWidget(self)
         self.skills_text = self._new_text_edit()
+        self.hooks_list = QListWidget(self)
+        self.hooks_text = self._new_text_edit()
         self.commands_list = QListWidget(self)
         self.commands_text = self._new_text_edit()
         self.agents_list = QListWidget(self)
         self.agents_text = self._new_text_edit()
         self.install_text = self._new_text_edit()
         self._skills: list[PluginContentItem] = []
+        self._hooks: list[PluginContentItem] = []
         self._commands: list[PluginContentItem] = []
         self._agents: list[PluginContentItem] = []
 
@@ -48,8 +51,9 @@ class PluginDetailPanel(CardWidget):
 
         self.tabs.addTab(self.overview_text, "概览")
         self.tabs.addTab(self._build_item_tab(self.skills_list, self.skills_text), "Skills")
-        self.tabs.addTab(self._build_item_tab(self.commands_list, self.commands_text), "Commands")
+        self.tabs.addTab(self._build_item_tab(self.hooks_list, self.hooks_text), "Hooks")
         self.tabs.addTab(self._build_item_tab(self.agents_list, self.agents_text), "Agents")
+        self.tabs.addTab(self._build_item_tab(self.commands_list, self.commands_text), "Commands")
         self.tabs.addTab(self.install_text, "安装记录")
         root.addWidget(self.tabs, 1)
 
@@ -131,12 +135,14 @@ class PluginDetailPanel(CardWidget):
 
     def _connect_signals(self) -> None:
         self.skills_list.currentRowChanged.connect(lambda row: self._show_item(self._skills, row, self.skills_text, "未找到 Skills"))
+        self.hooks_list.currentRowChanged.connect(lambda row: self._show_item(self._hooks, row, self.hooks_text, "未找到 Hooks"))
         self.commands_list.currentRowChanged.connect(lambda row: self._show_item(self._commands, row, self.commands_text, "未找到 Commands"))
         self.agents_list.currentRowChanged.connect(lambda row: self._show_item(self._agents, row, self.agents_text, "未找到 Agents"))
 
     def set_plugin(self, plugin: PluginView | None) -> None:
         self.plugin = plugin
         self._skills = []
+        self._hooks = []
         self._commands = []
         self._agents = []
         if plugin is None:
@@ -146,6 +152,7 @@ class PluginDetailPanel(CardWidget):
         self.subtitle_label.setText(plugin.plugin_id)
         self._set_content_text(self.overview_text, "正在读取插件内容...")
         self._set_items(self.skills_list, self.skills_text, [], "正在读取插件内容...")
+        self._set_items(self.hooks_list, self.hooks_text, [], "正在读取插件内容...")
         self._set_items(self.commands_list, self.commands_text, [], "正在读取插件内容...")
         self._set_items(self.agents_list, self.agents_text, [], "正在读取插件内容...")
         self._set_content_text(self.install_text, self._build_install_text(plugin))
@@ -155,9 +162,11 @@ class PluginDetailPanel(CardWidget):
             return
         self._set_content_text(self.overview_text, self._build_overview_markdown(bundle), markdown=True)
         self._skills = bundle.skills
+        self._hooks = bundle.hooks
         self._commands = bundle.commands
         self._agents = bundle.agents
         self._set_items(self.skills_list, self.skills_text, self._skills, "未找到 Skills")
+        self._set_items(self.hooks_list, self.hooks_text, self._hooks, "未找到 Hooks")
         self._set_items(self.commands_list, self.commands_text, self._commands, "未找到 Commands")
         self._set_items(self.agents_list, self.agents_text, self._agents, "未找到 Agents")
 
@@ -166,10 +175,12 @@ class PluginDetailPanel(CardWidget):
             return
         error_text = f"读取插件内容失败：\n{message}"
         self._skills = []
+        self._hooks = []
         self._commands = []
         self._agents = []
         self._set_content_text(self.overview_text, error_text)
         self._set_items(self.skills_list, self.skills_text, [], error_text)
+        self._set_items(self.hooks_list, self.hooks_text, [], error_text)
         self._set_items(self.commands_list, self.commands_text, [], error_text)
         self._set_items(self.agents_list, self.agents_text, [], error_text)
 
@@ -178,6 +189,7 @@ class PluginDetailPanel(CardWidget):
         self.subtitle_label.setText("选择左侧插件查看内容与安装记录")
         self._set_content_text(self.overview_text, "请选择左侧插件。")
         self._set_items(self.skills_list, self.skills_text, [], "请选择左侧插件。")
+        self._set_items(self.hooks_list, self.hooks_text, [], "请选择左侧插件。")
         self._set_items(self.commands_list, self.commands_text, [], "请选择左侧插件。")
         self._set_items(self.agents_list, self.agents_text, [], "请选择左侧插件。")
         self._set_content_text(self.install_text, "暂无安装记录。")

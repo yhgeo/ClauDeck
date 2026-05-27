@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
     BodyLabel,
@@ -52,7 +52,16 @@ class PluginListPanel(QWidget):
         self.watcher_status_label = BodyLabel("后台 watcher：检查中...", self)
         self.hook_button = PushButton("安装会话启动 hook", self)
         self.watcher_stop_button = PushButton("停止 watcher", self)
+        self.hook_info_label = self._new_info_label(
+            "SessionStart hook 是写入 Claude Code settings.json 的启动钩子。安装后，新会话启动时会先同步插件并启动后台 watcher。"
+        )
+        self.watcher_info_label = self._new_info_label(
+            "watcher 是 ClauDeck 的后台监听进程，会监视插件记录和 settings.json，在插件状态丢失时自动修复 enabledPlugins。"
+        )
         self.empty_label = BodyLabel("没有匹配的插件", self)
+        self.sync_button.setToolTip("立即按当前同步策略检查并修复 enabledPlugins。")
+        self.hook_button.setToolTip("安装、更新或移除 ClauDeck 管理的 Claude Code SessionStart hook。")
+        self.watcher_stop_button.setToolTip("停止当前正在运行的后台 watcher；不会移除 SessionStart hook。")
 
         self._build_layout()
         self._build_settings_menu()
@@ -87,11 +96,13 @@ class PluginListPanel(QWidget):
         hook_header = QHBoxLayout()
         hook_header.setSpacing(8)
         hook_header.addWidget(self.hook_status_label, 1)
+        hook_header.addWidget(self.hook_info_label)
         hook_header.addWidget(self.hook_button)
         hook_row.addLayout(hook_header)
         watcher_header = QHBoxLayout()
         watcher_header.setSpacing(8)
         watcher_header.addWidget(self.watcher_status_label, 1)
+        watcher_header.addWidget(self.watcher_info_label)
         watcher_header.addWidget(self.watcher_stop_button)
         hook_row.addLayout(watcher_header)
         root.addLayout(hook_row)
@@ -132,6 +143,13 @@ class PluginListPanel(QWidget):
                 color: #24324a;
                 background: transparent;
             }
+            QLabel#infoBadge {
+                color: #2f78d6;
+                background: #eef6ff;
+                border: 1px solid #8bb8f0;
+                border-radius: 9px;
+                font-weight: 700;
+            }
             BodyLabel#hookStatusLabel,
             BodyLabel#watcherStatusLabel {
                 padding: 6px 10px;
@@ -160,13 +178,23 @@ class PluginListPanel(QWidget):
             """
         )
 
+    def _new_info_label(self, tooltip: str) -> QLabel:
+        label = QLabel("!", self)
+        label.setObjectName("infoBadge")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setFixedSize(18, 18)
+        label.setToolTip(tooltip)
+        return label
+
     def _build_settings_menu(self) -> None:
         self._settings_menu = RoundMenu(parent=self)
         self._count_action = Action(FluentIcon.INFO, "", self._settings_menu)
+        self._count_action.setToolTip("开启后，已安装但缺失于 enabledPlugins 的插件会被自动补回。")
         self._count_action.triggered.connect(self._on_sync_plugin_count_triggered)
         self._settings_menu.addAction(self._count_action)
 
         self._state_action = Action(FluentIcon.INFO, "", self._settings_menu)
+        self._state_action.setToolTip("单向模式按 ClauDeck 记录修复启用状态；双向模式会接受外部对启用状态的修改。")
         self._state_action.triggered.connect(self._on_sync_plugin_enabled_state_triggered)
         self._settings_menu.addAction(self._state_action)
 
@@ -179,7 +207,7 @@ class PluginListPanel(QWidget):
 
     def set_plugins(self, plugins: list[PluginView], selected_plugin_id: str | None = None) -> str | None:
         scroll_value = self.scroll_area.verticalScrollBar().value()
-        self.plugins = plugins
+        self.plugins = self._sort_plugins(plugins)
         self._update_summary()
         self.apply_filter(selected_plugin_id=selected_plugin_id, emit_selection=False)
         self._restore_scroll_position(scroll_value)
@@ -225,10 +253,9 @@ class PluginListPanel(QWidget):
             if plugin.plugin_id == plugin_id:
                 plugin.enabled = enabled
                 break
-        card = self.cards.get(plugin_id)
-        if card is not None:
-            card.set_enabled_state(enabled)
+        self.plugins = self._sort_plugins(self.plugins)
         self._update_summary()
+        self.apply_filter(selected_plugin_id=plugin_id, emit_selection=False)
 
     def set_busy(self, busy: bool) -> None:
         self.refresh_button.setEnabled(not busy)
@@ -316,6 +343,17 @@ class PluginListPanel(QWidget):
             " ".join(plugin.versions),
         ]
         return any(keyword in value.lower() for value in haystacks if value)
+
+    def _sort_plugins(self, plugins: list[PluginView]) -> list[PluginView]:
+        return sorted(
+            plugins,
+            key=lambda plugin: (
+                not plugin.enabled,
+                plugin.name.lower(),
+                plugin.publisher.lower(),
+                plugin.plugin_id.lower(),
+            ),
+        )
 
     def _update_summary(self) -> None:
         enabled_count = sum(1 for plugin in self.plugins if plugin.enabled)

@@ -8,7 +8,7 @@ import signal
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,8 @@ from plugin_sync import sync_enabled_plugins
 
 WATCHER_VERSION = "desired-state-v2"
 WATCHER_STATUS_SCHEMA_VERSION = 1
+LOG_RETENTION_DAYS = 2
+LOG_PRUNE_INTERVAL_SECONDS = 60 * 60
 
 
 class SingleInstanceLock:
@@ -86,8 +88,10 @@ class WatcherLogger:
         self.log_dir = claude_dir / "logs"
         self.log_path = self.log_dir / "plugin_sync_watcher.log"
         self.status_path = self.log_dir / "plugin_sync_watcher_status.json"
+        self._last_log_prune = 0.0
 
     def log(self, event: str, **payload: Any) -> None:
+        self._prune_old_logs()
         self.log_dir.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -117,6 +121,56 @@ class WatcherLogger:
         except (OSError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _prune_old_logs(self) -> None:
+        now = time.time()
+        if now - self._last_log_prune < LOG_PRUNE_INTERVAL_SECONDS:
+            return
+        self._last_log_prune = now
+        if not self.log_path.exists():
+            return
+
+        cutoff = datetime.now() - timedelta(days=LOG_RETENTION_DAYS)
+        try:
+            lines = self.log_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+
+        kept_lines: list[str] = []
+        changed = False
+        for line in lines:
+            if not line.strip():
+                changed = True
+                continue
+            try:
+                payload = json.loads(line)
+                timestamp = payload.get("timestamp") if isinstance(payload, dict) else None
+                record_time = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else None
+            except (ValueError, TypeError, json.JSONDecodeError):
+                kept_lines.append(line)
+                continue
+
+            if record_time is None:
+                kept_lines.append(line)
+                continue
+            try:
+                is_recent = record_time >= cutoff
+            except TypeError:
+                kept_lines.append(line)
+                continue
+            if is_recent:
+                kept_lines.append(line)
+            else:
+                changed = True
+
+        if not changed:
+            return
+        try:
+            with self.log_path.open("w", encoding="utf-8") as handle:
+                if kept_lines:
+                    handle.write("\n".join(kept_lines) + "\n")
+        except OSError:
+            return
 
 
 def file_signature(path: Path) -> tuple[int, int] | None:

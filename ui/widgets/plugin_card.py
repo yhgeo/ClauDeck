@@ -99,8 +99,9 @@ class PluginCard(CardWidget):
     def _apply_style(self) -> None:
         selected_border = "#2f78d6" if self._selected else "#c8d7ea"
         selected_bg = "#e8f2ff" if self._selected else "#ffffff"
-        badge_bg = "#dff5e7" if self.plugin.enabled else "#eef2f7"
-        badge_fg = "#0c6b35" if self.plugin.enabled else "#596a82"
+        badge_bg = "#dff5e7" if self.plugin.enabled else "#fff1f0"
+        badge_fg = "#0c6b35" if self.plugin.enabled else "#b42318"
+        badge_border = "#0c6b35" if self.plugin.enabled else "#f1a6a0"
         meta_bg = "#f3f8ff" if self.plugin.enabled else "#f6f8fb"
 
         self.setStyleSheet(
@@ -135,7 +136,7 @@ class PluginCard(CardWidget):
             QLabel#statusBadge {{
                 color: {badge_fg};
                 background: {badge_bg};
-                border: 1px solid {badge_fg};
+                border: 1px solid {badge_border};
                 border-radius: 10px;
                 padding: 4px 10px;
                 font-weight: 700;

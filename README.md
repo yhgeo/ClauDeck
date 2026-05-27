@@ -28,8 +28,9 @@ English summary: ClauDeck is a local desktop manager for Claude Code plugins, wi
 
 - PyQt6 + Fluent 风格桌面界面
 - 左侧插件卡片列表，右侧常驻详情面板
-- 查看插件 README、Skills、Commands、Agents 和安装记录
+- 查看插件 README、Skills、Hooks、Agents、Commands 和安装记录
 - 一键启用 / 禁用插件
+- 已启用插件优先展示，禁用插件使用更醒目的红色状态徽标
 - 一键卸载插件，并清理本地缓存与 JSON 记录
 - 一次性同步、后台 watcher、Claude Code SessionStart hook 三种自动修复方式
 - GUI 中查看 watcher 运行状态，并可手动停止当前 watcher
@@ -141,7 +142,7 @@ watcher 状态文件位置：
 ~/.claude/logs/plugin_sync_watcher_status.json
 ```
 
-日志会记录启动、文件变化检测、自动补回插件映射、异常和退出事件。
+日志会记录启动、文件变化检测、自动补回插件映射、异常和退出事件。watcher 会自动保留最近 2 天内的日志记录。
 
 ## 主要文件
 

@@ -27,6 +27,7 @@ class PluginContentBundle:
     manifest: PluginContentItem | None = None
     readme: PluginContentItem | None = None
     skills: list[PluginContentItem] = field(default_factory=list)
+    hooks: list[PluginContentItem] = field(default_factory=list)
     commands: list[PluginContentItem] = field(default_factory=list)
     agents: list[PluginContentItem] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -38,6 +39,7 @@ def discover_plugin_content(plugin: PluginView, cache_root: Path) -> PluginConte
     manifest: PluginContentItem | None = None
     readme: PluginContentItem | None = None
     skills: list[PluginContentItem] = []
+    hooks: list[PluginContentItem] = []
     commands: list[PluginContentItem] = []
     agents: list[PluginContentItem] = []
 
@@ -45,12 +47,17 @@ def discover_plugin_content(plugin: PluginView, cache_root: Path) -> PluginConte
         plugin_manifest = _read_item(root / ".claude-plugin" / "plugin.json", "manifest", root)
         if plugin_manifest is not None and manifest is None:
             manifest = _format_manifest(plugin_manifest)
+        if plugin_manifest is not None:
+            manifest_hooks = _extract_manifest_hooks(plugin_manifest)
+            if manifest_hooks is not None:
+                hooks.append(manifest_hooks)
 
         plugin_readme = _read_item(root / "README.md", "readme", root)
         if plugin_readme is not None and readme is None:
             readme = plugin_readme
 
         skills.extend(_read_globbed_items(root, "skills/*/SKILL.md", "skill"))
+        hooks.extend(_read_hook_items(root))
         commands.extend(_read_globbed_items(root, "commands/*.md", "command"))
         agents.extend(_read_globbed_items(root, "agents/*.md", "agent"))
 
@@ -63,6 +70,7 @@ def discover_plugin_content(plugin: PluginView, cache_root: Path) -> PluginConte
         manifest=manifest,
         readme=readme,
         skills=_dedupe_items(skills),
+        hooks=_dedupe_items(hooks),
         commands=_dedupe_items(commands),
         agents=_dedupe_items(agents),
         errors=errors,
@@ -95,6 +103,13 @@ def _read_globbed_items(root: Path, pattern: str, kind: str) -> list[PluginConte
     return items
 
 
+def _read_hook_items(root: Path) -> list[PluginContentItem]:
+    items: list[PluginContentItem] = []
+    for pattern in ("hooks/*.md", "hooks/*.json", "hooks/*.toml", "hooks/*.yaml", "hooks/*.yml"):
+        items.extend(_read_globbed_items(root, pattern, "hook"))
+    return items
+
+
 def _read_item(path: Path, kind: str, root: Path) -> PluginContentItem | None:
     if not path.exists() or not path.is_file():
         return None
@@ -119,13 +134,31 @@ def _read_item(path: Path, kind: str, root: Path) -> PluginContentItem | None:
 def _title_for(path: Path, kind: str) -> str:
     if kind == "skill" and path.parent.name:
         return path.parent.name
-    if kind in {"command", "agent"}:
+    if kind in {"hook", "command", "agent"}:
         return path.stem
     if kind == "manifest":
         return "plugin.json"
     if kind == "readme":
         return "README"
     return path.name
+
+
+def _extract_manifest_hooks(item: PluginContentItem) -> PluginContentItem | None:
+    try:
+        payload = json.loads(item.content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or "hooks" not in payload:
+        return None
+
+    return PluginContentItem(
+        kind="hook",
+        title="plugin.json hooks",
+        relative_path=item.relative_path,
+        absolute_path=item.absolute_path,
+        content=json.dumps(payload["hooks"], ensure_ascii=False, indent=2),
+        error=item.error,
+    )
 
 
 def _format_manifest(item: PluginContentItem) -> PluginContentItem:

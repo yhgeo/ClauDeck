@@ -6,6 +6,5 @@ build/
 dist/
 *.spec
 .claude/
-CLAUDE.md
 .claude/settings.local.json
 计划.md
