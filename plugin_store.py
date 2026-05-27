@@ -50,13 +50,28 @@ class PluginView:
         return [record.install_path for record in self.records if record.install_path is not None]
 
 
+@dataclass(frozen=True)
+class SyncPreferences:
+    sync_plugin_count: bool = True
+    sync_plugin_enabled_state: bool = True
+
+
+@dataclass(frozen=True)
+class SettingsLayer:
+    kind: str
+    path: Path
+    precedence: int
+
+
 class ClaudePluginStore:
-    def __init__(self, claude_dir: str | Path | None = None) -> None:
+    def __init__(self, claude_dir: str | Path | None = None, project_dir: str | Path | None = None) -> None:
         self.claude_dir = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+        self.project_dir = Path(project_dir).expanduser() if project_dir else None
         self.plugins_dir = self.claude_dir / "plugins"
         self.plugins_cache_dir = self.plugins_dir / "cache"
         self.installed_plugins_path = self.plugins_dir / "installed_plugins.json"
         self.settings_path = self.claude_dir / "settings.json"
+        self.claudeck_state_path = self.plugins_dir / "claudeck_state.json"
 
     def _read_json(self, path: Path, default: Any) -> Any:
         if not path.exists():
@@ -97,14 +112,20 @@ class ClaudePluginStore:
     def save_installed_registry(self, registry: dict[str, Any]) -> None:
         self._write_json(self.installed_plugins_path, registry)
 
-    def load_settings(self) -> dict[str, Any]:
-        settings = self._read_json(self.settings_path, {})
+    def load_settings_from_path(self, path: Path) -> dict[str, Any]:
+        settings = self._read_json(path, {})
         if not isinstance(settings, dict):
-            raise StoreError(f"Unexpected settings structure: {self.settings_path}")
+            raise StoreError(f"Unexpected settings structure: {path}")
         return settings
 
+    def save_settings_to_path(self, path: Path, settings: dict[str, Any]) -> None:
+        self._write_json(path, settings)
+
+    def load_settings(self) -> dict[str, Any]:
+        return self.load_settings_from_path(self.settings_path)
+
     def save_settings(self, settings: dict[str, Any]) -> None:
-        self._write_json(self.settings_path, settings)
+        self.save_settings_to_path(self.settings_path, settings)
 
     def normalize_enabled_plugins(self, settings: dict[str, Any]) -> tuple[dict[str, bool], bool]:
         changed = False
@@ -116,7 +137,7 @@ class ClaudePluginStore:
         normalized: dict[str, bool] = {}
         for key, value in raw_enabled.items():
             normalized_key = str(key)
-            normalized_value = value if isinstance(value, bool) else bool(value)
+            normalized_value = normalize_bool(value)
             normalized[normalized_key] = normalized_value
             if normalized_key != key or normalized_value != value:
                 changed = True
@@ -127,22 +148,205 @@ class ClaudePluginStore:
 
         return raw_enabled, False
 
+    def load_claudeck_state(self) -> dict[str, Any]:
+        state = self._read_json(
+            self.claudeck_state_path,
+            {
+                "version": 1,
+                "disabledPluginIds": [],
+                "desiredEnabledPlugins": {},
+                "syncPreferences": {
+                    "syncPluginCount": True,
+                    "syncPluginEnabledState": True,
+                },
+            },
+        )
+        if not isinstance(state, dict):
+            raise StoreError(f"Unexpected ClauDeck state structure: {self.claudeck_state_path}")
+        if not isinstance(state.get("disabledPluginIds"), list):
+            state["disabledPluginIds"] = []
+        if not isinstance(state.get("desiredEnabledPlugins"), dict):
+            state["desiredEnabledPlugins"] = {}
+        if not isinstance(state.get("syncPreferences"), dict):
+            state["syncPreferences"] = {}
+        return state
+
+    def save_claudeck_state(self, state: dict[str, Any]) -> None:
+        state["version"] = 1
+        disabled_plugin_ids = state.get("disabledPluginIds", [])
+        if not isinstance(disabled_plugin_ids, list):
+            disabled_plugin_ids = []
+        sync_preferences = state.get("syncPreferences", {})
+        if not isinstance(sync_preferences, dict):
+            sync_preferences = {}
+        desired_enabled_plugins = state.get("desiredEnabledPlugins", {})
+        if not isinstance(desired_enabled_plugins, dict):
+            desired_enabled_plugins = {}
+        state["disabledPluginIds"] = sorted({str(plugin_id) for plugin_id in disabled_plugin_ids}, key=str.lower)
+        state["desiredEnabledPlugins"] = {
+            str(plugin_id): normalize_bool(value)
+            for plugin_id, value in desired_enabled_plugins.items()
+        }
+        state["syncPreferences"] = {
+            "syncPluginCount": normalize_bool(sync_preferences.get("syncPluginCount", True)),
+            "syncPluginEnabledState": normalize_bool(sync_preferences.get("syncPluginEnabledState", True)),
+        }
+        self._write_json(self.claudeck_state_path, state)
+
+    def load_disabled_plugin_ids(self) -> set[str]:
+        state = self.load_claudeck_state()
+        disabled_plugin_ids = state.get("disabledPluginIds", [])
+        if not isinstance(disabled_plugin_ids, list):
+            return set()
+        return {str(plugin_id) for plugin_id in disabled_plugin_ids}
+
+    def save_disabled_plugin_ids(self, disabled_plugin_ids: set[str]) -> None:
+        state = self.load_claudeck_state()
+        state["disabledPluginIds"] = sorted(disabled_plugin_ids, key=str.lower)
+        self.save_claudeck_state(state)
+
+    def remember_plugin_disabled(self, plugin_id: str) -> None:
+        disabled_plugin_ids = self.load_disabled_plugin_ids()
+        if plugin_id in disabled_plugin_ids:
+            return
+        disabled_plugin_ids.add(plugin_id)
+        self.save_disabled_plugin_ids(disabled_plugin_ids)
+
+    def forget_plugin_disabled(self, plugin_id: str) -> None:
+        disabled_plugin_ids = self.load_disabled_plugin_ids()
+        if plugin_id not in disabled_plugin_ids:
+            return
+        disabled_plugin_ids.remove(plugin_id)
+        self.save_disabled_plugin_ids(disabled_plugin_ids)
+
+    def load_desired_enabled_plugins(self) -> dict[str, bool]:
+        state = self.load_claudeck_state()
+        desired_enabled_plugins = state.get("desiredEnabledPlugins", {})
+        if not isinstance(desired_enabled_plugins, dict):
+            return {}
+        return {
+            str(plugin_id): normalize_bool(value)
+            for plugin_id, value in desired_enabled_plugins.items()
+        }
+
+    def save_desired_enabled_plugins(self, desired_enabled_plugins: dict[str, bool]) -> None:
+        state = self.load_claudeck_state()
+        state["desiredEnabledPlugins"] = {
+            str(plugin_id): normalize_bool(value)
+            for plugin_id, value in desired_enabled_plugins.items()
+        }
+        self.save_claudeck_state(state)
+
+    def load_sync_preferences(self) -> SyncPreferences:
+        state = self.load_claudeck_state()
+        sync_preferences = state.get("syncPreferences", {})
+        if not isinstance(sync_preferences, dict):
+            return SyncPreferences()
+        return SyncPreferences(
+            sync_plugin_count=normalize_bool(sync_preferences.get("syncPluginCount", True)),
+            sync_plugin_enabled_state=normalize_bool(sync_preferences.get("syncPluginEnabledState", True)),
+        )
+
+    def save_sync_preferences(self, preferences: SyncPreferences) -> None:
+        state = self.load_claudeck_state()
+        state["syncPreferences"] = {
+            "syncPluginCount": preferences.sync_plugin_count,
+            "syncPluginEnabledState": preferences.sync_plugin_enabled_state,
+        }
+        self.save_claudeck_state(state)
+
+    def update_sync_preferences(
+        self,
+        *,
+        sync_plugin_count: bool | None = None,
+        sync_plugin_enabled_state: bool | None = None,
+    ) -> SyncPreferences:
+        current = self.load_sync_preferences()
+        updated = SyncPreferences(
+            sync_plugin_count=current.sync_plugin_count if sync_plugin_count is None else sync_plugin_count,
+            sync_plugin_enabled_state=(
+                current.sync_plugin_enabled_state
+                if sync_plugin_enabled_state is None
+                else sync_plugin_enabled_state
+            ),
+        )
+        self.save_sync_preferences(updated)
+        return updated
+
+    def settings_layers(self) -> list[SettingsLayer]:
+        layers = [SettingsLayer("user", self.settings_path, 10)]
+        if self.project_dir is not None:
+            project_claude_dir = self.project_dir / ".claude"
+            layers.append(SettingsLayer("project", project_claude_dir / "settings.json", 20))
+            layers.append(SettingsLayer("project-local", project_claude_dir / "settings.local.json", 30))
+
+        deduped: list[SettingsLayer] = []
+        seen: set[Path] = set()
+        for layer in layers:
+            resolved = layer.path.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            deduped.append(layer)
+        return sorted(deduped, key=lambda layer: layer.precedence)
+
+    def existing_settings_layers(self) -> list[SettingsLayer]:
+        return [layer for layer in self.settings_layers() if layer.kind == "user" or layer.path.exists()]
+
+    def watch_settings_paths(self) -> list[Path]:
+        return [layer.path for layer in self.settings_layers()]
+
+    def load_effective_enabled_plugins(self) -> dict[str, bool]:
+        enabled_plugins: dict[str, bool] = {}
+        for layer in self.settings_layers():
+            if not layer.path.exists() and layer.kind != "user":
+                continue
+            settings = self.load_settings_from_path(layer.path)
+            layer_enabled_plugins, _ = self.normalize_enabled_plugins(settings)
+            enabled_plugins.update(layer_enabled_plugins)
+        return enabled_plugins
+
+    def load_explicit_plugin_state_by_layer(self) -> dict[SettingsLayer, dict[str, bool]]:
+        explicit_state_by_layer: dict[SettingsLayer, dict[str, bool]] = {}
+        for layer in self.settings_layers():
+            if not layer.path.exists() and layer.kind != "user":
+                continue
+            settings = self.load_settings_from_path(layer.path)
+            enabled_plugins, _ = self.normalize_enabled_plugins(settings)
+            explicit_state_by_layer[layer] = dict(enabled_plugins)
+        return explicit_state_by_layer
+
+    def load_enabled_plugins_by_layer(self) -> dict[Path, dict[str, bool]]:
+        enabled_plugins_by_layer: dict[Path, dict[str, bool]] = {}
+        for layer in self.settings_layers():
+            if not layer.path.exists() and layer.kind != "user":
+                continue
+            settings = self.load_settings_from_path(layer.path)
+            enabled_plugins, _ = self.normalize_enabled_plugins(settings)
+            enabled_plugins_by_layer[layer.path] = dict(enabled_plugins)
+        return enabled_plugins_by_layer
+
     def _file_signature(self, path: Path) -> tuple[int, int] | None:
         if not path.exists():
             return None
         stat = path.stat()
         return stat.st_mtime_ns, stat.st_size
 
-    def update_enabled_plugins(
+    def update_enabled_plugins_for_path(
         self,
+        path: Path,
         updater: Callable[[dict[str, bool]], bool],
         *,
+        create_if_missing: bool,
         max_attempts: int = 3,
     ) -> EnabledPluginsUpdateResult:
+        if not create_if_missing and not path.exists():
+            return EnabledPluginsUpdateResult(changed=False, normalized=False)
+
         for _ in range(max_attempts):
-            before_signature = self._file_signature(self.settings_path)
-            settings = self.load_settings()
-            after_signature = self._file_signature(self.settings_path)
+            before_signature = self._file_signature(path)
+            settings = self.load_settings_from_path(path)
+            after_signature = self._file_signature(path)
             if before_signature != after_signature:
                 continue
 
@@ -154,14 +358,27 @@ class ClaudePluginStore:
             if not changed:
                 return EnabledPluginsUpdateResult(changed=False, normalized=False)
 
-            if self._file_signature(self.settings_path) != after_signature:
+            if self._file_signature(path) != after_signature:
                 continue
 
             settings["enabledPlugins"] = updated_enabled_plugins
-            self._write_json(self.settings_path, settings)
+            self._write_json(path, settings)
             return EnabledPluginsUpdateResult(changed=True, normalized=normalized)
 
-        raise StoreError(f"Settings changed while updating enabledPlugins: {self.settings_path}")
+        raise StoreError(f"Settings changed while updating enabledPlugins: {path}")
+
+    def update_enabled_plugins(
+        self,
+        updater: Callable[[dict[str, bool]], bool],
+        *,
+        max_attempts: int = 3,
+    ) -> EnabledPluginsUpdateResult:
+        return self.update_enabled_plugins_for_path(
+            self.settings_path,
+            updater,
+            create_if_missing=True,
+            max_attempts=max_attempts,
+        )
 
     def list_plugin_ids(self) -> list[str]:
         registry = self.load_installed_registry()
@@ -169,8 +386,7 @@ class ClaudePluginStore:
 
     def build_plugin_views(self) -> list[PluginView]:
         registry = self.load_installed_registry()
-        settings = self.load_settings()
-        enabled_plugins, _ = self.normalize_enabled_plugins(settings)
+        enabled_plugins = self.load_effective_enabled_plugins()
         views: list[PluginView] = []
 
         for plugin_id, raw_records in registry.get("plugins", {}).items():
@@ -231,7 +447,20 @@ class ClaudePluginStore:
             enabled_plugins[plugin_id] = enabled
             return True
 
-        self.update_enabled_plugins(apply)
+        desired_enabled_plugins = self.load_desired_enabled_plugins()
+        desired_enabled_plugins[plugin_id] = enabled
+        self.save_desired_enabled_plugins(desired_enabled_plugins)
+
+        for layer in self.settings_layers():
+            self.update_enabled_plugins_for_path(
+                layer.path,
+                apply,
+                create_if_missing=layer.kind == "user",
+            )
+        if enabled:
+            self.forget_plugin_disabled(plugin_id)
+        else:
+            self.remember_plugin_disabled(plugin_id)
 
     def remove_plugin_from_registry(self, plugin_id: str) -> bool:
         registry = self.load_installed_registry()
@@ -253,7 +482,12 @@ class ClaudePluginStore:
             removed = True
             return True
 
-        self.update_enabled_plugins(apply)
+        for layer in self.settings_layers():
+            self.update_enabled_plugins_for_path(
+                layer.path,
+                apply,
+                create_if_missing=False,
+            )
         return removed
 
     def plugin_cache_root(self, plugin_id: str) -> Path:
@@ -316,6 +550,20 @@ class ClaudePluginStore:
         self.remove_plugin_from_registry(plugin_id)
         self.remove_plugin_from_settings(plugin_id)
         return completed
+
+
+def normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "0", "no", "off", "disabled", "disable"}:
+            return False
+        if normalized in {"true", "1", "yes", "on", "enabled", "enable"}:
+            return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
 
 
 def split_plugin_id(plugin_id: str) -> tuple[str, str]:

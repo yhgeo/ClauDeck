@@ -5,15 +5,20 @@ from typing import Any
 
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSplitter, QStatusBar, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, TitleLabel
+from qfluentwidgets import BodyLabel, FluentIcon, TitleLabel, TransparentToolButton
 
 from hook_manager import (
     HookChangeResult,
     HookManagerError,
     HookStatus,
+    WatcherRuntimeStatus,
+    WatcherStopResult,
     get_hook_status,
+    get_watcher_status,
     install_session_start_hook,
     remove_session_start_hook,
+    run_session_start_sync,
+    stop_watcher as stop_running_watcher,
 )
 from plugin_content import PluginContentBundle, discover_plugin_content
 from plugin_store import ClaudePluginStore, PluginView, StoreError
@@ -24,9 +29,9 @@ from ui.workers.tasks import FunctionWorker, TaskResult
 
 
 class PluginManagerWindow(QMainWindow):
-    def __init__(self, claude_dir: Path | None = None, claude_bin: str = "claude") -> None:
+    def __init__(self, claude_dir: Path | None = None, project_dir: Path | None = None, claude_bin: str = "claude") -> None:
         super().__init__()
-        self.store = ClaudePluginStore(claude_dir)
+        self.store = ClaudePluginStore(claude_dir, project_dir)
         self.claude_bin = claude_bin
         self.plugins: dict[str, PluginView] = {}
         self.selected_plugin_id: str | None = None
@@ -39,11 +44,13 @@ class PluginManagerWindow(QMainWindow):
 
         self.list_panel = PluginListPanel(self)
         self.detail_panel = PluginDetailPanel(self)
+        self.settings_button = TransparentToolButton(FluentIcon.SETTING, self)
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
 
         self._build_layout()
         self._connect_signals()
+        self._apply_sync_preferences()
         self.refresh_hook_status()
         self.refresh_plugins(sync_first=True, message="正在加载插件...")
 
@@ -53,10 +60,18 @@ class PluginManagerWindow(QMainWindow):
         root.setContentsMargins(18, 16, 18, 12)
         root.setSpacing(14)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        title_column = QVBoxLayout()
+        title_column.setSpacing(4)
         title = TitleLabel("ClauDeck 插件管理", central)
         subtitle = BodyLabel("管理 Claude Code 插件、同步启用状态，并浏览 README、Skills、Commands 与 Agents。", central)
-        root.addWidget(title)
-        root.addWidget(subtitle)
+        title_column.addWidget(title)
+        title_column.addWidget(subtitle)
+        title_row.addLayout(title_column, 1)
+        self.settings_button.setToolTip("同步设置")
+        title_row.addWidget(self.settings_button)
+        root.addLayout(title_row)
 
         splitter = QSplitter(central)
         splitter.addWidget(self.list_panel)
@@ -145,12 +160,49 @@ class PluginManagerWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.list_panel.pluginSelected.connect(self.select_plugin)
-        self.list_panel.refreshRequested.connect(lambda: self.refresh_plugins(sync_first=False, message="正在刷新插件..."))
+        self.list_panel.refreshRequested.connect(lambda: self.refresh_plugins(sync_first=True, message="正在刷新并同步插件..."))
         self.list_panel.syncRequested.connect(self.sync_plugins)
         self.list_panel.toggleRequested.connect(self.set_plugin_enabled)
         self.list_panel.uninstallRequested.connect(self.uninstall_plugin)
         self.list_panel.hookInstallRequested.connect(self.install_hook)
         self.list_panel.hookRemoveRequested.connect(self.remove_hook)
+        self.list_panel.watcherStopRequested.connect(self.stop_watcher)
+        self.list_panel.syncPluginCountChanged.connect(self.set_sync_plugin_count)
+        self.list_panel.syncPluginEnabledStateChanged.connect(self.set_sync_plugin_enabled_state)
+        self.settings_button.clicked.connect(self._show_settings_menu)
+
+    def _show_settings_menu(self) -> None:
+        self.list_panel.show_settings_menu(self.settings_button.mapToGlobal(self.settings_button.rect().bottomLeft()))
+
+    def _apply_sync_preferences(self) -> None:
+        preferences = self.store.load_sync_preferences()
+        self.list_panel.set_sync_preferences(
+            sync_plugin_count=preferences.sync_plugin_count,
+            sync_plugin_enabled_state=preferences.sync_plugin_enabled_state,
+        )
+
+    def set_sync_plugin_count(self, enabled: bool) -> None:
+        try:
+            self.store.update_sync_preferences(sync_plugin_count=enabled)
+        except StoreError as exc:
+            self._apply_sync_preferences()
+            self._show_error("更新失败", str(exc))
+            self.status_bar.showMessage(f"更新失败：{exc}")
+            return
+        self._apply_sync_preferences()
+        self.status_bar.showMessage(f"自动补齐新增插件已{'开启' if enabled else '关闭'}。")
+
+    def set_sync_plugin_enabled_state(self, enabled: bool) -> None:
+        try:
+            self.store.update_sync_preferences(sync_plugin_enabled_state=enabled)
+        except StoreError as exc:
+            self._apply_sync_preferences()
+            self._show_error("更新失败", str(exc))
+            self.status_bar.showMessage(f"更新失败：{exc}")
+            return
+        self._apply_sync_preferences()
+        mode_text = "单向" if self.store.load_sync_preferences().sync_plugin_enabled_state else "双向"
+        self.status_bar.showMessage(f"插件状态同步模式（{mode_text}）。")
 
     def refresh_plugins(self, *, sync_first: bool, message: str) -> None:
         def task() -> dict[str, Any]:
@@ -172,24 +224,28 @@ class PluginManagerWindow(QMainWindow):
 
     def refresh_hook_status(self) -> None:
         try:
-            status = get_hook_status(self.store.claude_dir)
+            hook_status = get_hook_status(self.store.claude_dir, session_project_dir=self.store.project_dir)
+            watcher_status = get_watcher_status(self.store.claude_dir)
         except HookManagerError as exc:
-            self.list_panel.set_hook_status(f"自动同步：读取失败（{exc}）", False, False, error=True)
+            self.list_panel.set_hook_status(f"会话启动 hook：读取失败（{exc}）", "后台 watcher：读取失败", False, False, error=True)
             return
-        self._apply_hook_status(status)
+        self._apply_hook_status(hook_status, watcher_status)
 
     def install_hook(self) -> None:
-        def task() -> HookChangeResult:
-            return install_session_start_hook(self.store.claude_dir)
+        def task() -> dict[str, Any]:
+            result = install_session_start_hook(self.store.claude_dir, session_project_dir=self.store.project_dir)
+            run_session_start_sync(self.store.claude_dir, self.store.project_dir)
+            plugins = self.store.build_plugin_views()
+            return {"result": result, "plugins": plugins}
 
-        self._set_busy(True, "正在安装自动同步 hook...")
-        self._run_worker(task, self._on_hook_changed)
+        self._set_busy(True, "正在安装会话启动 hook...")
+        self._run_worker(task, self._on_hook_installed)
 
     def remove_hook(self) -> None:
         reply = QMessageBox.question(
             self,
-            "移除自动同步",
-            "确定要移除 ClauDeck 自动同步 hook 吗？\n\n这只会删除 ClauDeck 写入的 SessionStart hook，不会删除其它 Claude Code hooks，也不会停止当前已经运行的 watcher。",
+            "移除会话启动 hook",
+            "确定要移除 ClauDeck 会话启动 hook 吗？\n\n这只会删除 ClauDeck 写入的 SessionStart hook，不会删除其它 Claude Code hooks，也不会停止当前已经运行的 watcher。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -199,8 +255,25 @@ class PluginManagerWindow(QMainWindow):
         def task() -> HookChangeResult:
             return remove_session_start_hook(self.store.claude_dir)
 
-        self._set_busy(True, "正在移除自动同步 hook...")
+        self._set_busy(True, "正在移除会话启动 hook...")
         self._run_worker(task, self._on_hook_changed)
+
+    def stop_watcher(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "停止后台 watcher",
+            "确定要停止当前正在运行的 watcher 吗？\n\n这不会移除 SessionStart hook；如果 hook 仍安装，下次会话启动时 watcher 可能会重新启动。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        def task() -> WatcherStopResult:
+            return stop_running_watcher(self.store.claude_dir)
+
+        self._set_busy(True, "正在停止后台 watcher...")
+        self._run_worker(task, self._on_watcher_stopped)
 
     def select_plugin(self, plugin_id: str) -> None:
         self.selected_plugin_id = plugin_id or None
@@ -238,9 +311,9 @@ class PluginManagerWindow(QMainWindow):
 
         def task() -> dict[str, Any]:
             self.store.uninstall_plugin(plugin_id, claude_bin=self.claude_bin)
-            sync_enabled_plugins(self.store)
+            sync_result = sync_enabled_plugins(self.store)
             plugins = self.store.build_plugin_views()
-            return {"plugins": plugins, "removed_plugin_id": plugin_id}
+            return {"plugins": plugins, "removed_plugin_id": plugin_id, "sync_result": sync_result}
 
         self._set_busy(True, f"正在卸载 {plugin_id}...")
         self._run_worker(task, self._on_plugin_uninstalled)
@@ -249,32 +322,63 @@ class PluginManagerWindow(QMainWindow):
         plugins = payload["plugins"]
         sync_result = payload.get("sync_result")
         self._apply_plugins(plugins)
+        self.refresh_hook_status()
         if sync_result is None:
             self.status_bar.showMessage(f"已加载 {len(plugins)} 个插件。")
         else:
-            self.status_bar.showMessage(
-                f"同步完成：变更={sync_result.changed}，补回插件={len(sync_result.added_plugin_ids)}。"
-            )
+            if sync_result.state_sync_mode == "one_way":
+                self.status_bar.showMessage(
+                    "同步完成："
+                    f"补齐新增={'开' if sync_result.count_sync_applied else '关'}，"
+                    f"同步启用状态=单向，"
+                    f"修正插件={len(sync_result.corrected_plugin_ids)}，"
+                    f"修复层数={sync_result.updated_layers_count}。"
+                )
+            else:
+                self.status_bar.showMessage(
+                    "同步完成："
+                    f"补齐新增={'开' if sync_result.count_sync_applied else '关'}，"
+                    f"同步启用状态=双向，"
+                    f"接受外部变化={len(sync_result.accepted_plugin_ids)}，"
+                    f"修复层数={sync_result.updated_layers_count}。"
+                )
 
     def _on_plugin_uninstalled(self, payload: dict[str, Any]) -> None:
         removed_plugin_id = payload["removed_plugin_id"]
         if self.selected_plugin_id == removed_plugin_id:
             self.selected_plugin_id = None
         self._apply_plugins(payload["plugins"])
+        self.refresh_hook_status()
         self.status_bar.showMessage(f"插件 {removed_plugin_id} 已卸载。")
 
+    def _on_hook_installed(self, payload: dict[str, Any]) -> None:
+        result = payload["result"]
+        self.refresh_hook_status()
+        self._apply_plugins(payload["plugins"])
+        self.status_bar.showMessage(f"{result.message}，已立即同步并启动监听。")
+
     def _on_hook_changed(self, result: HookChangeResult) -> None:
-        self._apply_hook_status(result.status)
+        self.refresh_hook_status()
         self.status_bar.showMessage(result.message)
 
-    def _apply_hook_status(self, status: HookStatus) -> None:
-        if status.installed and status.stale:
-            text = "自动同步：路径已过期"
-        elif status.installed:
-            text = "自动同步：已安装"
+    def _on_watcher_stopped(self, result: WatcherStopResult) -> None:
+        self.refresh_hook_status()
+        self.status_bar.showMessage(result.message)
+
+    def _apply_hook_status(self, hook_status: HookStatus, watcher_status: WatcherRuntimeStatus) -> None:
+        if hook_status.installed and hook_status.stale:
+            hook_text = "会话启动 hook：需更新"
+        elif hook_status.installed:
+            hook_text = "会话启动 hook：已安装"
         else:
-            text = "自动同步：未安装"
-        self.list_panel.set_hook_status(text, status.installed, status.stale)
+            hook_text = "会话启动 hook：未安装"
+        self.list_panel.set_hook_status(
+            hook_text,
+            watcher_status.message,
+            hook_status.installed,
+            hook_status.stale,
+            watcher_status.running,
+        )
 
     def _apply_plugins(self, plugins: list[PluginView]) -> None:
         self.plugins = {plugin.plugin_id: plugin for plugin in plugins}
@@ -302,6 +406,7 @@ class PluginManagerWindow(QMainWindow):
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self.list_panel.set_busy(busy)
         self.detail_panel.set_busy(busy)
+        self.settings_button.setEnabled(not busy)
         if message:
             self.status_bar.showMessage(message)
 

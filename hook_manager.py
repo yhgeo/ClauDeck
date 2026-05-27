@@ -3,12 +3,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from plugin_store import ClaudePluginStore, StoreError
+from plugin_sync import sync_enabled_plugins
+from settings_watcher import WATCHER_STATUS_SCHEMA_VERSION, WATCHER_VERSION
 
 
 MANAGED_HOOK_ID = "claudeck-plugin-sync-v1"
@@ -33,9 +40,41 @@ class HookStatus:
 
 
 @dataclass(frozen=True)
+class WatcherRuntimeStatus:
+    running: bool
+    stale: bool
+    pid: int | None
+    watcher_version: str | None
+    status_path: Path
+    log_path: Path
+    last_heartbeat_at: str | None
+    message: str
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["status_path"] = str(self.status_path)
+        payload["log_path"] = str(self.log_path)
+        return payload
+
+
+@dataclass(frozen=True)
 class HookChangeResult:
     changed: bool
     status: HookStatus
+    message: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "changed": self.changed,
+            "status": self.status.to_dict(),
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class WatcherStopResult:
+    changed: bool
+    status: WatcherRuntimeStatus
     message: str
 
     def to_dict(self) -> dict[str, object]:
@@ -57,6 +96,16 @@ def get_project_dir() -> Path:
 def get_user_settings_path(claude_dir: Path | None = None) -> Path:
     base_dir = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
     return base_dir / "settings.json"
+
+
+def get_watcher_status_path(claude_dir: Path | None = None) -> Path:
+    base_dir = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+    return base_dir / "logs" / "plugin_sync_watcher_status.json"
+
+
+def get_watcher_log_path(claude_dir: Path | None = None) -> Path:
+    base_dir = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+    return base_dir / "logs" / "plugin_sync_watcher.log"
 
 
 def read_settings(settings_path: Path) -> dict[str, Any]:
@@ -90,15 +139,32 @@ def write_settings(settings_path: Path, settings: dict[str, Any]) -> None:
             os.unlink(temp_name)
 
 
+def _bash_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _to_bash_path(path: str | Path) -> str:
+    raw = str(Path(path))
+    if os.name != "nt":
+        return raw
+    normalized = raw.replace("\\", "/")
+    if len(normalized) >= 2 and normalized[1] == ":":
+        drive = normalized[0].lower()
+        remainder = normalized[2:]
+        return f"/{drive}{remainder}"
+    return normalized
+
+
 def build_hook_command(
     project_dir: Path | None = None,
     python_executable: str | None = None,
     claude_dir: Path | None = None,
+    session_project_dir: Path | None = None,
 ) -> str:
     root = Path(project_dir).resolve() if project_dir else get_project_dir()
     if is_frozen():
         command = [
-            str(root / Path(sys.executable).name),
+            _to_bash_path(root / Path(sys.executable).name),
             "--hook-manager",
             "launch",
             "--managed-hook-id",
@@ -108,15 +174,17 @@ def build_hook_command(
         manager_path = root / "hook_manager.py"
         python_path = python_executable or sys.executable
         command = [
-            python_path,
-            str(manager_path),
+            _to_bash_path(python_path),
+            _to_bash_path(manager_path),
             "launch",
             "--managed-hook-id",
             MANAGED_HOOK_ID,
         ]
     if claude_dir is not None:
-        command.extend(["--claude-dir", str(Path(claude_dir).expanduser())])
-    return subprocess.list2cmdline(command)
+        command.extend(["--claude-dir", _to_bash_path(Path(claude_dir).expanduser())])
+    if session_project_dir is not None:
+        command.extend(["--project-dir", _to_bash_path(Path(session_project_dir).expanduser())])
+    return " ".join(_bash_quote(part) for part in command)
 
 
 def _session_start_entries(settings: dict[str, Any]) -> list[Any]:
@@ -148,16 +216,17 @@ def get_hook_status(
     claude_dir: Path | None = None,
     project_dir: Path | None = None,
     python_executable: str | None = None,
+    session_project_dir: Path | None = None,
 ) -> HookStatus:
     settings_path = get_user_settings_path(claude_dir)
     settings = read_settings(settings_path)
-    expected_command = build_hook_command(project_dir, python_executable, claude_dir)
+    expected_command = build_hook_command(project_dir, python_executable, claude_dir, session_project_dir)
 
     for _hook, command in _iter_command_hooks(settings):
         if MANAGED_HOOK_ID not in command:
             continue
         stale = command != expected_command
-        message = "自动同步 hook 路径已过期" if stale else "自动同步 hook 已安装"
+        message = "会话启动 hook 路径已过期" if stale else "会话启动 hook 已安装"
         return HookStatus(
             installed=True,
             stale=stale,
@@ -171,8 +240,149 @@ def get_hook_status(
         stale=False,
         settings_path=settings_path,
         command=None,
-        message="自动同步 hook 未安装",
+        message="会话启动 hook 未安装",
     )
+
+
+def get_watcher_status(claude_dir: Path | None = None) -> WatcherRuntimeStatus:
+    status_path = get_watcher_status_path(claude_dir)
+    log_path = get_watcher_log_path(claude_dir)
+    if not status_path.exists():
+        return WatcherRuntimeStatus(
+            running=False,
+            stale=False,
+            pid=None,
+            watcher_version=None,
+            status_path=status_path,
+            log_path=log_path,
+            last_heartbeat_at=None,
+            message="后台 watcher 未运行",
+        )
+
+    try:
+        with status_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HookManagerError(f"Invalid watcher status: {status_path}\n{exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HookManagerError(f"Unexpected watcher status structure: {status_path}")
+
+    pid = payload.get("pid") if isinstance(payload.get("pid"), int) else None
+    running = bool(payload.get("running")) and pid is not None and _process_exists(pid)
+    watcher_version = payload.get("watcher_version") if isinstance(payload.get("watcher_version"), str) else None
+    last_heartbeat_at = payload.get("last_heartbeat_at") if isinstance(payload.get("last_heartbeat_at"), str) else None
+    stale = watcher_version not in {None, WATCHER_VERSION}
+    if running and stale:
+        message = f"后台 watcher 运行中（PID {pid}，版本过旧）"
+    elif running:
+        message = f"后台 watcher 运行中（PID {pid}，版本 {watcher_version or 'unknown'}）"
+    elif stale:
+        message = "后台 watcher 未运行（上次记录版本过旧）"
+    else:
+        message = "后台 watcher 未运行"
+
+    return WatcherRuntimeStatus(
+        running=running,
+        stale=stale,
+        pid=pid,
+        watcher_version=watcher_version,
+        status_path=status_path,
+        log_path=log_path,
+        last_heartbeat_at=last_heartbeat_at,
+        message=message,
+    )
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            exit_code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return bool(ok) and exit_code.value == STILL_ACTIVE
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_process(pid: int) -> bool:
+    if not _process_exists(pid):
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+
+    for _ in range(10):
+        if not _process_exists(pid):
+            return True
+        time.sleep(0.2)
+    return not _process_exists(pid)
+
+
+def _write_watcher_stopped_status(claude_dir: Path | None, previous_status: WatcherRuntimeStatus) -> None:
+    status_path = previous_status.status_path
+    log_path = previous_status.log_path
+    payload: dict[str, Any] = {}
+    if status_path.exists():
+        try:
+            with status_path.open("r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                payload = loaded
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+    now = datetime.now().isoformat(timespec="seconds")
+    base_dir = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+    payload.update(
+        {
+            "schema_version": WATCHER_STATUS_SCHEMA_VERSION,
+            "watcher_version": WATCHER_VERSION,
+            "running": False,
+            "pid": previous_status.pid,
+            "claude_dir": str(base_dir),
+            "last_heartbeat_at": now,
+            "log_path": str(log_path),
+            "state": "stopped_by_user",
+            "stopped_at": now,
+            "last_error": None,
+        }
+    )
+
+    try:
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        with status_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except OSError:
+        pass
+
+
+def stop_watcher(claude_dir: Path | None = None) -> WatcherStopResult:
+    status = get_watcher_status(claude_dir)
+    if not status.running or status.pid is None:
+        return WatcherStopResult(False, status, "后台 watcher 未运行")
+
+    if not _terminate_process(status.pid):
+        raise HookManagerError(f"无法停止后台 watcher（PID {status.pid}）")
+
+    _write_watcher_stopped_status(claude_dir, status)
+    return WatcherStopResult(True, get_watcher_status(claude_dir), f"后台 watcher 已停止（PID {status.pid}）")
 
 
 def _new_session_start_entry(command: str) -> dict[str, Any]:
@@ -183,7 +393,7 @@ def _new_session_start_entry(command: str) -> dict[str, Any]:
                 "command": command,
                 "shell": "bash",
                 "timeout": 10,
-                "statusMessage": "启动 ClauDeck 插件同步守护进程",
+                "statusMessage": "同步 ClauDeck 插件并启动监听",
             }
         ]
     }
@@ -234,6 +444,7 @@ def install_session_start_hook(
     claude_dir: Path | None = None,
     project_dir: Path | None = None,
     python_executable: str | None = None,
+    session_project_dir: Path | None = None,
 ) -> HookChangeResult:
     root = Path(project_dir).resolve() if project_dir else get_project_dir()
     if not is_frozen() and not (root / "settings_watcher.py").exists():
@@ -241,11 +452,11 @@ def install_session_start_hook(
 
     settings_path = get_user_settings_path(claude_dir)
     settings = read_settings(settings_path)
-    command = build_hook_command(root, python_executable, claude_dir)
-    before_status = get_hook_status(claude_dir, root, python_executable)
+    command = build_hook_command(root, python_executable, claude_dir, session_project_dir)
+    before_status = get_hook_status(claude_dir, root, python_executable, session_project_dir)
 
     if before_status.installed and not before_status.stale:
-        return HookChangeResult(False, before_status, "自动同步 hook 已经安装")
+        return HookChangeResult(False, before_status, "会话启动 hook 已经安装")
 
     _remove_managed_hooks(settings)
     hooks = settings.get("hooks")
@@ -259,8 +470,8 @@ def install_session_start_hook(
     session_start.append(_new_session_start_entry(command))
     write_settings(settings_path, settings)
 
-    status = get_hook_status(claude_dir, root, python_executable)
-    return HookChangeResult(True, status, "自动同步 hook 已安装")
+    status = get_hook_status(claude_dir, root, python_executable, session_project_dir)
+    return HookChangeResult(True, status, "会话启动 hook 已安装")
 
 
 def remove_session_start_hook(
@@ -275,11 +486,11 @@ def remove_session_start_hook(
         write_settings(settings_path, settings)
 
     status = get_hook_status(claude_dir, project_dir, python_executable)
-    message = "自动同步 hook 已移除" if removed else "没有找到 ClauDeck 自动同步 hook"
+    message = "会话启动 hook 已移除" if removed else "没有找到 ClauDeck 会话启动 hook"
     return HookChangeResult(bool(removed), status, message)
 
 
-def launch_watcher(claude_dir: Path | None = None) -> int:
+def launch_watcher(claude_dir: Path | None = None, project_dir: Path | None = None) -> int:
     if is_frozen():
         command = [sys.executable, "--watcher", "--quiet"]
         cwd = str(get_project_dir())
@@ -289,6 +500,8 @@ def launch_watcher(claude_dir: Path | None = None) -> int:
         cwd = str(get_project_dir())
     if claude_dir is not None:
         command.extend(["--claude-dir", str(Path(claude_dir).expanduser())])
+    if project_dir is not None:
+        command.extend(["--project-dir", str(Path(project_dir).expanduser())])
 
     kwargs: dict[str, Any] = {
         "cwd": cwd,
@@ -306,6 +519,18 @@ def launch_watcher(claude_dir: Path | None = None) -> int:
     return 0
 
 
+def run_session_start_sync(claude_dir: Path | None = None, project_dir: Path | None = None) -> int:
+    try:
+        sync_enabled_plugins(ClaudePluginStore(claude_dir, project_dir))
+    except StoreError as exc:
+        raise HookManagerError(f"Plugin sync failed: {exc}") from exc
+    try:
+        launch_watcher(claude_dir, project_dir)
+    except OSError:
+        return 0
+    return 0
+
+
 def _print_payload(payload: dict[str, object], as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -317,12 +542,14 @@ def _print_payload(payload: dict[str, object], as_json: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage ClauDeck Claude Code SessionStart hook")
     parser.add_argument("--claude-dir", type=Path, default=None, help="Override ~/.claude directory")
+    parser.add_argument("--project-dir", type=Path, default=None, help="Override current project directory")
     parser.add_argument("--json", action="store_true", help="Print JSON output")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("status", help="Show hook status")
     subparsers.add_parser("install", help="Install or update the SessionStart hook")
     subparsers.add_parser("remove", help="Remove the managed SessionStart hook")
+    subparsers.add_parser("stop-watcher", help="Stop the running settings watcher")
     launch_parser = subparsers.add_parser("launch", help="Launch settings watcher and exit")
     launch_parser.add_argument("--managed-hook-id", required=True, help="Managed hook marker")
 
@@ -330,18 +557,30 @@ def main() -> int:
 
     try:
         if args.command == "status":
-            status = get_hook_status(args.claude_dir)
-            _print_payload({"ok": True, "status": status.to_dict(), "message": status.message}, args.json)
+            hook_status = get_hook_status(args.claude_dir, session_project_dir=args.project_dir)
+            watcher_status = get_watcher_status(args.claude_dir)
+            _print_payload(
+                {
+                    "ok": True,
+                    "hook": hook_status.to_dict(),
+                    "watcher": watcher_status.to_dict(),
+                    "message": f"{hook_status.message}；{watcher_status.message}",
+                },
+                args.json,
+            )
         elif args.command == "install":
-            result = install_session_start_hook(args.claude_dir)
+            result = install_session_start_hook(args.claude_dir, session_project_dir=args.project_dir)
             _print_payload({"ok": True, **result.to_dict()}, args.json)
         elif args.command == "remove":
             result = remove_session_start_hook(args.claude_dir)
             _print_payload({"ok": True, **result.to_dict()}, args.json)
+        elif args.command == "stop-watcher":
+            result = stop_watcher(args.claude_dir)
+            _print_payload({"ok": True, **result.to_dict()}, args.json)
         elif args.command == "launch":
             if args.managed_hook_id != MANAGED_HOOK_ID:
                 raise HookManagerError("Unexpected managed hook id")
-            return launch_watcher(args.claude_dir)
+            return run_session_start_sync(args.claude_dir, args.project_dir)
     except HookManagerError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))

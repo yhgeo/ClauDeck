@@ -13,12 +13,13 @@ from plugin_sync import sync_enabled_plugins
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync plugins, then forward to claude")
     parser.add_argument("--claude-dir", type=Path, default=None, help="Override ~/.claude directory")
+    parser.add_argument("--project-dir", type=Path, default=None, help="Override current project directory")
     parser.add_argument("--claude-bin", default="claude", help="Claude executable name or path")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded to claude")
     args = parser.parse_args()
 
     claude_bin = shutil.which(args.claude_bin) or args.claude_bin
-    store = ClaudePluginStore(args.claude_dir)
+    store = ClaudePluginStore(args.claude_dir, args.project_dir)
 
     try:
         sync_enabled_plugins(store)

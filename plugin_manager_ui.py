@@ -12,9 +12,9 @@ from plugin_sync import sync_enabled_plugins
 class PluginManagerApp:
     CARD_WIDTH = 620
 
-    def __init__(self, root: tk.Tk, claude_dir: Path | None = None, claude_bin: str = "claude") -> None:
+    def __init__(self, root: tk.Tk, claude_dir: Path | None = None, project_dir: Path | None = None, claude_bin: str = "claude") -> None:
         self.root = root
-        self.store = ClaudePluginStore(claude_dir)
+        self.store = ClaudePluginStore(claude_dir, project_dir)
         self.claude_bin = claude_bin
         self.plugins: dict[str, PluginView] = {}
         self.filtered_plugin_ids: list[str] = []
@@ -247,7 +247,14 @@ class PluginManagerApp:
             return
 
         self.refresh_plugins()
-        self.status_var.set(f"同步完成：变更={result.changed}，补回插件={len(result.added_plugin_ids)}")
+        self.status_var.set(
+            "同步完成："
+            f"变更={result.changed}，"
+            f"新增启用={len(result.added_plugin_ids)}，"
+            f"恢复禁用={len(result.restored_disabled_plugin_ids)}，"
+            f"禁用项目范围={len(result.disabled_project_plugin_ids)}，"
+            f"跳过项目范围={len(result.skipped_project_plugin_ids)}"
+        )
 
     def refresh_plugins(self, initial: bool = False) -> None:
         try:
@@ -611,11 +618,12 @@ class PluginManagerApp:
 def main() -> int:
     parser = argparse.ArgumentParser(description="可视化 Claude 插件管理器")
     parser.add_argument("--claude-dir", type=Path, default=None, help="覆盖默认的 ~/.claude 目录")
+    parser.add_argument("--project-dir", type=Path, default=None, help="覆盖当前项目目录")
     parser.add_argument("--claude-bin", default="claude", help="Claude 可执行文件名或路径")
     args = parser.parse_args()
 
     root = tk.Tk()
-    PluginManagerApp(root, claude_dir=args.claude_dir, claude_bin=args.claude_bin)
+    PluginManagerApp(root, claude_dir=args.claude_dir, project_dir=args.project_dir, claude_bin=args.claude_bin)
     root.mainloop()
     return 0
 

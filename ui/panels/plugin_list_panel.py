@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, PrimaryPushButton, PushButton, SearchLineEdit, StrongBodyLabel
+from qfluentwidgets import (
+    Action,
+    BodyLabel,
+    FluentIcon,
+    PrimaryPushButton,
+    PushButton,
+    RoundMenu,
+    SearchLineEdit,
+    StrongBodyLabel,
+)
 
 from plugin_store import PluginView
 from ui.widgets.plugin_card import PluginCard
@@ -17,6 +26,9 @@ class PluginListPanel(QWidget):
     uninstallRequested = pyqtSignal(str)
     hookInstallRequested = pyqtSignal()
     hookRemoveRequested = pyqtSignal()
+    watcherStopRequested = pyqtSignal()
+    syncPluginCountChanged = pyqtSignal(bool)
+    syncPluginEnabledStateChanged = pyqtSignal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -24,6 +36,11 @@ class PluginListPanel(QWidget):
         self.filtered_plugins: list[PluginView] = []
         self.selected_plugin_id: str | None = None
         self.cards: dict[str, PluginCard] = {}
+        self._hook_installed = False
+        self._hook_stale = False
+        self._watcher_running = False
+        self._sync_plugin_count = True
+        self._sync_plugin_enabled_state = True
 
         self.total_card = SummaryCard("插件总数", self)
         self.enabled_card = SummaryCard("已启用", self)
@@ -31,14 +48,16 @@ class PluginListPanel(QWidget):
         self.search_edit = SearchLineEdit(self)
         self.refresh_button = PushButton("刷新", self)
         self.sync_button = PrimaryPushButton("同步插件", self)
-        self.hook_status_label = BodyLabel("自动同步：检查中...", self)
-        self.hook_button = PushButton("安装自动同步", self)
+        self.hook_status_label = BodyLabel("会话启动 hook：检查中...", self)
+        self.watcher_status_label = BodyLabel("后台 watcher：检查中...", self)
+        self.hook_button = PushButton("安装会话启动 hook", self)
+        self.watcher_stop_button = PushButton("停止 watcher", self)
         self.empty_label = BodyLabel("没有匹配的插件", self)
-        self._hook_installed = False
-        self._hook_stale = False
 
         self._build_layout()
+        self._build_settings_menu()
         self._connect_signals()
+        self._update_settings_actions()
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
@@ -61,12 +80,20 @@ class PluginListPanel(QWidget):
         toolbar.addWidget(self.sync_button)
         root.addLayout(toolbar)
 
-        hook_row = QHBoxLayout()
+        hook_row = QVBoxLayout()
         hook_row.setSpacing(8)
         self.hook_status_label.setObjectName("hookStatusLabel")
-        self.hook_button.setObjectName("hookButton")
-        hook_row.addWidget(self.hook_status_label, 1)
-        hook_row.addWidget(self.hook_button)
+        self.watcher_status_label.setObjectName("watcherStatusLabel")
+        hook_header = QHBoxLayout()
+        hook_header.setSpacing(8)
+        hook_header.addWidget(self.hook_status_label, 1)
+        hook_header.addWidget(self.hook_button)
+        hook_row.addLayout(hook_header)
+        watcher_header = QHBoxLayout()
+        watcher_header.setSpacing(8)
+        watcher_header.addWidget(self.watcher_status_label, 1)
+        watcher_header.addWidget(self.watcher_stop_button)
+        hook_row.addLayout(watcher_header)
         root.addLayout(hook_row)
 
         self.scroll_area = QScrollArea(self)
@@ -105,7 +132,8 @@ class PluginListPanel(QWidget):
                 color: #24324a;
                 background: transparent;
             }
-            BodyLabel#hookStatusLabel {
+            BodyLabel#hookStatusLabel,
+            BodyLabel#watcherStatusLabel {
                 padding: 6px 10px;
                 border: 1px solid #cbd8ea;
                 border-radius: 9px;
@@ -132,11 +160,22 @@ class PluginListPanel(QWidget):
             """
         )
 
+    def _build_settings_menu(self) -> None:
+        self._settings_menu = RoundMenu(parent=self)
+        self._count_action = Action(FluentIcon.INFO, "", self._settings_menu)
+        self._count_action.triggered.connect(self._on_sync_plugin_count_triggered)
+        self._settings_menu.addAction(self._count_action)
+
+        self._state_action = Action(FluentIcon.INFO, "", self._settings_menu)
+        self._state_action.triggered.connect(self._on_sync_plugin_enabled_state_triggered)
+        self._settings_menu.addAction(self._state_action)
+
     def _connect_signals(self) -> None:
         self.search_edit.textChanged.connect(self.apply_filter)
         self.refresh_button.clicked.connect(self.refreshRequested.emit)
         self.sync_button.clicked.connect(self.syncRequested.emit)
         self.hook_button.clicked.connect(self._on_hook_button_clicked)
+        self.watcher_stop_button.clicked.connect(self.watcherStopRequested.emit)
 
     def set_plugins(self, plugins: list[PluginView], selected_plugin_id: str | None = None) -> str | None:
         scroll_value = self.scroll_area.verticalScrollBar().value()
@@ -145,6 +184,11 @@ class PluginListPanel(QWidget):
         self.apply_filter(selected_plugin_id=selected_plugin_id, emit_selection=False)
         self._restore_scroll_position(scroll_value)
         return self.selected_plugin_id
+
+    def set_sync_preferences(self, *, sync_plugin_count: bool, sync_plugin_enabled_state: bool) -> None:
+        self._sync_plugin_count = sync_plugin_count
+        self._sync_plugin_enabled_state = sync_plugin_enabled_state
+        self._update_settings_actions()
 
     def apply_filter(self, _text: str | None = None, *, selected_plugin_id: str | None = None, emit_selection: bool = True) -> None:
         keyword = self.search_edit.text().strip().lower()
@@ -190,35 +234,78 @@ class PluginListPanel(QWidget):
         self.refresh_button.setEnabled(not busy)
         self.sync_button.setEnabled(not busy)
         self.hook_button.setEnabled(not busy)
+        self._update_watcher_stop_button(not busy)
         for card in self.cards.values():
             card.toggle_button.setEnabled(not busy)
             card.uninstall_button.setEnabled(not busy)
 
-    def set_hook_status(self, status_text: str, installed: bool, stale: bool, error: bool = False) -> None:
+    def set_hook_status(
+        self,
+        hook_text: str,
+        watcher_text: str,
+        installed: bool,
+        stale: bool,
+        watcher_running: bool = False,
+        error: bool = False,
+    ) -> None:
         self._hook_installed = installed
         self._hook_stale = stale
-        self.hook_status_label.setText(status_text)
+        self._watcher_running = watcher_running
+        self.hook_status_label.setText(hook_text)
+        self.watcher_status_label.setText(watcher_text)
         if error:
             self.hook_status_label.setStyleSheet("color: #a73525; font-weight: 600;")
+            self.watcher_status_label.setStyleSheet("color: #a73525; font-weight: 600;")
         elif installed and not stale:
             self.hook_status_label.setStyleSheet("color: #0c6b35; font-weight: 600;")
+            self.watcher_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
         elif stale:
             self.hook_status_label.setStyleSheet("color: #9a6500; font-weight: 600;")
+            self.watcher_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
         else:
             self.hook_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
+            self.watcher_status_label.setStyleSheet("color: #596a82; font-weight: 600;")
         if installed and not stale:
-            button_text = "移除自动同步"
+            button_text = "移除会话启动 hook"
         elif stale:
-            button_text = "修复自动同步"
+            button_text = "更新会话启动 hook"
         else:
-            button_text = "安装自动同步"
+            button_text = "安装会话启动 hook"
         self.hook_button.setText(button_text)
+        self._update_watcher_stop_button(True)
+
+    def _update_watcher_stop_button(self, controls_enabled: bool) -> None:
+        self.watcher_stop_button.setEnabled(controls_enabled and self._watcher_running)
 
     def _on_hook_button_clicked(self) -> None:
         if self._hook_installed and not self._hook_stale:
             self.hookRemoveRequested.emit()
         else:
             self.hookInstallRequested.emit()
+
+    def show_settings_menu(self, global_pos) -> None:
+        self._update_settings_actions()
+        self._settings_menu.exec(global_pos)
+
+    def _on_sync_plugin_count_triggered(self) -> None:
+        new_value = not self._sync_plugin_count
+        self._sync_plugin_count = new_value
+        self._update_settings_actions()
+        self.syncPluginCountChanged.emit(new_value)
+
+    def _on_sync_plugin_enabled_state_triggered(self) -> None:
+        new_value = not self._sync_plugin_enabled_state
+        self._sync_plugin_enabled_state = new_value
+        self._update_settings_actions()
+        self.syncPluginEnabledStateChanged.emit(new_value)
+
+    def _update_settings_actions(self) -> None:
+        self._count_action.setText(
+            f"自动补齐新增插件（{'已开启' if self._sync_plugin_count else '已关闭'}）"
+        )
+        self._state_action.setText(
+            f"插件状态同步模式（{'单向' if self._sync_plugin_enabled_state else '双向'}）"
+        )
 
     def _matches(self, plugin: PluginView, keyword: str) -> bool:
         haystacks = [

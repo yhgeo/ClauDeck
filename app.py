@@ -33,6 +33,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="ClauDeck PyQt6 plugin manager")
     parser.add_argument("--claude-dir", type=Path, default=None, help="Override ~/.claude directory")
+    parser.add_argument("--project-dir", type=Path, default=None, help="Override current project directory")
     parser.add_argument("--claude-bin", default="claude", help="Claude executable name or path")
     args = parser.parse_args()
 
@@ -44,7 +45,7 @@ def main() -> int:
     if not icon.isNull():
         app.setWindowIcon(icon)
 
-    window = PluginManagerWindow(claude_dir=args.claude_dir, claude_bin=args.claude_bin)
+    window = PluginManagerWindow(claude_dir=args.claude_dir, project_dir=args.project_dir, claude_bin=args.claude_bin)
     if not icon.isNull():
         window.setWindowIcon(icon)
     window.show()
